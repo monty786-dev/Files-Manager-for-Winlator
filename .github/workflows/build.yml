@@ -1,0 +1,31 @@
+name: Build WinShellFM
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-i686 gcc-mingw-w64-x86-64
+
+      - name: Build 32-bit
+        run: >
+          i686-w64-mingw32-gcc -O2 -municode -mwindows winshell_fm.c -o WinShellFM_x86.exe
+          -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -static
+
+      - name: Build 64-bit
+        run: >
+          x86_64-w64-mingw32-gcc -O2 -municode -mwindows winshell_fm.c -o WinShellFM_x64.exe
+          -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -static
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinShellFM
+          path: |
+            WinShellFM_x86.exe
+            WinShellFM_x64.exe
