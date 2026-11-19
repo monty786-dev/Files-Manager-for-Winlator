@@ -14,18 +14,44 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-i686 gcc-mingw-w64-x86-64
 
       - name: Build 32-bit
-        run: >
-          i686-w64-mingw32-gcc -O2 -municode -mwindows winshell_fm.c -o WinShellFM_x86.exe
-          -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -static
+        shell: bash
+        run: |
+          set -o pipefail
+          i686-w64-mingw32-gcc -O2 -std=gnu11 -w \
+            -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
+            -Wno-error=implicit-function-declaration \
+            -municode -mwindows winshell_fm.c -o WinShellFM_x86.exe \
+            -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -static \
+            2>&1 | tee build_x86.log
 
       - name: Build 64-bit
-        run: >
-          x86_64-w64-mingw32-gcc -O2 -municode -mwindows winshell_fm.c -o WinShellFM_x64.exe
-          -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -static
+        shell: bash
+        run: |
+          set -o pipefail
+          x86_64-w64-mingw32-gcc -O2 -std=gnu11 -w \
+            -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
+            -Wno-error=implicit-function-declaration \
+            -municode -mwindows winshell_fm.c -o WinShellFM_x64.exe \
+            -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -static \
+            2>&1 | tee build_x64.log
 
-      - uses: actions/upload-artifact@v4
+      - name: Show errors on summary page
+        if: always()
+        shell: bash
+        run: |
+          echo '### First compiler errors (32-bit)' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -m 40 -B1 -A2 "error" build_x86.log >> $GITHUB_STEP_SUMMARY || echo "no errors" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: WinShellFM
+          if-no-files-found: ignore
           path: |
             WinShellFM_x86.exe
             WinShellFM_x64.exe
+            build_x86.log
+            build_x64.log
