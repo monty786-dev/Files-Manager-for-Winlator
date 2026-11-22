@@ -2,49 +2,70 @@ name: Build WinShellFM
 
 on:
   push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the code
+        uses: actions/checkout@v4
 
-      - name: Install MinGW-w64
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-i686 gcc-mingw-w64-x86-64
+      - name: Install MinGW-w64 cross compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 binutils-mingw-w64-i686 binutils-mingw-w64-x86-64
+          i686-w64-mingw32-gcc --version | head -n 1
 
-      - name: Build 32-bit
+      - name: Compile the icon resource
+        shell: bash
+        run: |
+          i686-w64-mingw32-windres app.rc -O coff -o app_x86.o
+          x86_64-w64-mingw32-windres app.rc -O coff -o app_x64.o
+
+      - name: Build 32-bit (x86) - works in every Winlator container
         shell: bash
         run: |
           set -o pipefail
-          i686-w64-mingw32-gcc -O2 -std=gnu11 -w \
+          i686-w64-mingw32-gcc -O2 -s -std=gnu11 -w \
             -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
             -Wno-error=implicit-function-declaration \
-            -municode -mwindows winshell_fm.c -o WinShellFM_x86.exe \
-            -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -static \
-            2>&1 | tee build_x86.log
+            -municode -mwindows winshell_fm.c app_x86.o -o WinShellFM_x86.exe \
+            -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -lwinmm \
+            -static 2>&1 | tee build_x86.log
 
-      - name: Build 64-bit
+      - name: Build 64-bit (x64)
         shell: bash
         run: |
           set -o pipefail
-          x86_64-w64-mingw32-gcc -O2 -std=gnu11 -w \
+          x86_64-w64-mingw32-gcc -O2 -s -std=gnu11 -w \
             -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
             -Wno-error=implicit-function-declaration \
-            -municode -mwindows winshell_fm.c -o WinShellFM_x64.exe \
-            -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -static \
-            2>&1 | tee build_x64.log
+            -municode -mwindows winshell_fm.c app_x64.o -o WinShellFM_x64.exe \
+            -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -lwinmm \
+            -static 2>&1 | tee build_x64.log
 
-      - name: Show errors on summary page
-        if: always()
+      - name: Show the result
+        run: |
+          file WinShellFM_x86.exe WinShellFM_x64.exe
+          ls -l WinShellFM_*.exe
+
+      - name: Put compiler errors on the run summary page
+        if: failure()
         shell: bash
         run: |
-          echo '### First compiler errors (32-bit)' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -m 40 -B1 -A2 "error" build_x86.log >> $GITHUB_STEP_SUMMARY || echo "no errors" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo '### Compiler errors' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          (grep -h -m 40 -B1 -A3 "error" build_x86.log build_x64.log 2>/dev/null || echo "no log found") >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload results
+      - name: Upload the program and build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -55,3 +76,11 @@ jobs:
             WinShellFM_x64.exe
             build_x86.log
             build_x64.log
+
+      - name: Attach to a GitHub Release (only when you push a tag like v1.0)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            WinShellFM_x86.exe
+            WinShellFM_x64.exe
