@@ -1264,9 +1264,11 @@ typedef struct {
     int pvsz0, pvsz1, pvsz2, pvsz3, pvsz4, pvsz5, pvsz6, pvsz7;
     SL favorites, pins, recent_folders, recent_files, session_tabs, pinned_tabs, autostart_apps;
     SL doc_fonts, search_hist, search_pins, folder_colors, icon_map, assoc;
+    int gs_confirm, arc_dialogs, autoadapt, menu_icons, arc_list;
+    WCHAR tool_7z[MAX_PATH], tool_rar[MAX_PATH], gs_dir[MAX_PATH];
     int confirm_ops, recycle, dbl_up, drag_margin, ext_icons, pc_tiles, pv_limit_mb, nav_right, hide_apps_sys;
     WCHAR apps_title[32], video_player[MAX_PATH], layout_name[32];
-    SL apps, apps_hide, shortcuts, layout_cur, layouts, trash_idx, games;
+    SL apps, apps_hide, shortcuts, layout_cur, layouts, trash_idx, games, assoc_prev, ctx_off, ctx_order, nav_hide, nav_order, btn_icons;
     Extra *extra; int nextra;
 } Cfg;
 static Cfg C;
@@ -1302,7 +1304,8 @@ static const Field CFG_FIELDS[] = {
     FLD_B("confirm_ops", confirm_ops), FLD_B("recycle", recycle), FLD_B("dbl_up", dbl_up), FLD_I("drag_margin", drag_margin), FLD_B("ext_icons", ext_icons),
     FLD_B("pc_tiles", pc_tiles), FLD_I("pv_limit_mb", pv_limit_mb), FLD_B("nav_right", nav_right), FLD_B("hide_apps_sys", hide_apps_sys),
     FLD_S("apps_title", apps_title), FLD_S("video_player", video_player), FLD_S("layout_name", layout_name),
-    FLD_L("apps", apps), FLD_L("apps_hide", apps_hide), FLD_L("shortcuts", shortcuts), FLD_L("layout_cur", layout_cur), FLD_L("layouts", layouts), FLD_L("trash_idx", trash_idx), FLD_L("games", games),
+    FLD_L("apps", apps), FLD_L("apps_hide", apps_hide), FLD_L("shortcuts", shortcuts), FLD_L("layout_cur", layout_cur), FLD_L("layouts", layouts), FLD_L("trash_idx", trash_idx), FLD_L("games", games), FLD_L("assoc_prev", assoc_prev), FLD_L("ctx_off", ctx_off), FLD_L("ctx_order", ctx_order), FLD_L("nav_hide", nav_hide), FLD_L("nav_order", nav_order), FLD_L("btn_icons", btn_icons),
+    FLD_B("gs_confirm", gs_confirm), FLD_B("arc_dialogs", arc_dialogs), FLD_B("autoadapt", autoadapt), FLD_B("menu_icons", menu_icons), FLD_B("arc_list", arc_list), FLD_S("tool_7z", tool_7z), FLD_S("tool_rar", tool_rar), FLD_S("gs_dir", gs_dir),
 };
 #define NFIELDS ARRLEN(CFG_FIELDS)
 
@@ -1311,22 +1314,22 @@ static void cfg_defaults(void) {
     free(C.extra);
     SL *lists[] = { &C.favorites, &C.pins, &C.recent_folders, &C.recent_files, &C.session_tabs, &C.pinned_tabs, &C.autostart_apps,
                     &C.doc_fonts, &C.search_hist, &C.search_pins, &C.folder_colors, &C.icon_map, &C.assoc,
-                    &C.apps, &C.apps_hide, &C.shortcuts, &C.layout_cur, &C.layouts, &C.trash_idx, &C.games };
-    enum { NLISTS = 20 };
+                    &C.apps, &C.apps_hide, &C.shortcuts, &C.layout_cur, &C.layouts, &C.trash_idx, &C.games, &C.assoc_prev, &C.ctx_off, &C.ctx_order, &C.nav_hide, &C.nav_order, &C.btn_icons };
+    enum { NLISTS = 26 };
     SL keep[NLISTS];
     for (int i = 0; i < NLISTS; i++) { sl_clear(lists[i]); keep[i] = *lists[i]; }
     memset(&C, 0, sizeof C);
     for (int i = 0; i < NLISTS; i++) *lists[i] = keep[i];
     scpy(C.theme, 16, L"dark"); scpy(C.accent, 16, L"#0078D4"); scpy(C.font, 64, L"Segoe UI");
     C.font_size = 14; C.scale = 1.0; scpy(C.view, 16, L"details"); C.icon_size = 64;
-    C.show_preview = 1; C.preview_width = 300; scpy(C.sort, 16, L"name"); C.asc = 1;
+    C.show_preview = 0; C.preview_width = 300;   /* heavy features start OFF; Settings > Performance turns them on */ scpy(C.sort, 16, L"name"); C.asc = 1;
     C.window_w = 1180; C.window_h = 720; C.window_x = CFG_UNSET; C.window_y = CFG_UNSET;
-    C.restore_session = 1; scpy(C.os_style, 16, L"win10"); C.style_fonts = 1; C.search_subfolders = 1;
-    C.search_limit = 20000; C.thumbnails = 1; scpy(C.sort_dirs, 8, L"first");
+    C.restore_session = 1; scpy(C.os_style, 16, L"win10"); C.style_fonts = 1; C.search_subfolders = 0;
+    C.search_limit = 20000; C.thumbnails = 0; scpy(C.sort_dirs, 8, L"first");
     C.checkboxes = 1; C.thumb_img = 1; C.thumb_vid = 1; C.thumb_gfx = 1; C.drag_drop = 1; C.rubber = 1; C.admin_menu = 1;
-    C.video_mode = 0; C.pv_zoom = 100; C.ribbon_open = 1; C.ribbon_tab = 1; C.auto_class = 1; C.show_counts = 1;
+    C.video_mode = 0; C.pv_zoom = 100; C.ribbon_open = 1; C.ribbon_tab = 1; C.auto_class = 1; C.show_counts = 0;
     C.pvsz0 = 1; C.pvsz1 = 1; C.pvsz2 = 1; C.pvsz3 = 2; C.pvsz4 = 2; C.pvsz5 = 2; C.pvsz6 = 2; C.pvsz7 = 1;
-    C.confirm_ops = 1; C.recycle = 1; C.dbl_up = 1; C.drag_margin = 48; C.ext_icons = 1; C.pc_tiles = 1; C.pv_limit_mb = 40; scpy(C.apps_title, 32, L"Computer");
+    C.gs_confirm = 1; C.arc_dialogs = 1; C.menu_icons = 1; scpy(C.gs_dir, MAX_PATH, L"D:\\Games\\Backups\\"); C.confirm_ops = 1; C.recycle = 1; C.dbl_up = 1; C.drag_margin = 48; C.ext_icons = 1; C.pc_tiles = 1; C.pv_limit_mb = 40; scpy(C.apps_title, 32, L"Computer");
 }
 
 /* --- tiny JSON reader (operates on UTF-16) --- */
@@ -1626,7 +1629,7 @@ static void cfg_validate(void) {
     if (C.window_h < 420) C.window_h = 720;
     if (C.pv_zoom < 25 || C.pv_zoom > 400) C.pv_zoom = 100;
     if (C.video_mode < 0 || C.video_mode > 2) C.video_mode = 0;
-    if (C.ribbon_tab < 0 || C.ribbon_tab > 5) C.ribbon_tab = 1;
+    if (C.ribbon_tab < 0 || C.ribbon_tab > 7) C.ribbon_tab = 1;
     int *pz[8] = { &C.pvsz0, &C.pvsz1, &C.pvsz2, &C.pvsz3, &C.pvsz4, &C.pvsz5, &C.pvsz6, &C.pvsz7 };
     for (int i = 0; i < 8; i++) if (*pz[i] < 0 || *pz[i] > 3) *pz[i] = 1;
     if (ON_WINE && !wcscmp(C.theme, L"light")) { fm_log("Migrating light->dark on Wine"); scpy(C.theme, 16, L"dark"); }
@@ -1809,7 +1812,7 @@ typedef struct { WCHAR key[MAX_PATH + 4]; HICON ic; } IconEnt;
 static IconEnt g_icons[700]; static int g_icon_next;
 static HICON icon_for(const WCHAR *path, int large, int is_dir) {
     const WCHAR *e = PathFindExtensionW(path); WCHAR key[MAX_PATH + 4];
-    int per_file = ext_in(path, L".exe.ico.lnk.scr.cur.ani.");
+    int per_file = ext_in(path, L".exe.ico.lnk.scr.cur.ani.msi.msp.");
     if (per_file) wfmt(key, MAX_PATH + 4, L"%c|%ls", large ? 'L' : 'S', path);
     else wfmt(key, MAX_PATH + 4, L"%c|%ls", large ? 'L' : 'S', e);
     CharLowerW(key);
@@ -1884,7 +1887,7 @@ typedef struct {
     int scroll, focus, anchor, searching, pinned;
     int nfold, nfile; u64 tot;
 } Tab;
-typedef struct { WCHAR label[MAX_PATH], path[MAX_PATH]; int root, glyph, sect, depth, exp; } NavEnt;
+typedef struct { WCHAR label[MAX_PATH], path[MAX_PATH]; int root, glyph, sect, depth, exp, blk; } NavEnt;
 typedef struct { RECT r; WCHAR path[MAX_PATH]; } Crumb;
 typedef struct { WCHAR path[MAX_PATH]; int kind; WCHAR *text; int tscroll; u64 size; FILETIME mt; WCHAR type[64]; int dir; } Prev;
 
@@ -2329,8 +2332,16 @@ static void start_delete(SL *s, int mode) {
     DelJob *j = (DelJob *)calloc(1, sizeof *j); j->mode = mode; j->hwnd = S.hwnd; for (int i = 0; i < s->n; i++) sl_add(&j->srcs, s->v[i]);
     HANDLE h = CreateThread(NULL, 0, delete_thread, j, 0, NULL); if (h) CloseHandle(h); else { S.busy = 0; sl_clear(&j->srcs); free(j->srcs.v); free(j); }
 }
-typedef struct { const WCHAR *text, *title; UINT flags; int result; } AskReq;
-static int ask_ui(HWND h, const WCHAR *text, const WCHAR *title, UINT flags) { AskReq a; a.text = text; a.title = title; a.flags = flags; a.result = 0; SendMessageW(h, WM_APP_ASK, 0, (LPARAM)&a); return a.result; }
+typedef struct { const WCHAR *text, *title; UINT flags; int result; int kind, apply, remaining; const WCHAR *o, *n; } AskReq;
+static int ask_ui(HWND h, const WCHAR *text, const WCHAR *title, UINT flags) { AskReq a; memset(&a, 0, sizeof a); a.text = text; a.title = title; a.flags = flags; SendMessageW(h, WM_APP_ASK, 0, (LPARAM)&a); return a.result; }
+static void file_info_str(const WCHAR *p, WCHAR *out, int cap) {
+    WIN32_FILE_ATTRIBUTE_DATA d; if (!GetFileAttributesExW(p, GetFileExInfoStandard, &d)) { scpy(out, cap, L"-"); return; } WCHAR s[40] = L"", t[64] = L""; if (!(d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) fmt_bytes(((u64)d.nFileSizeHigh << 32) | d.nFileSizeLow, s, 40); else lstrcpyW(s, L"Folder");
+    fmt_date(&d.ftLastWriteTime, t, 64); wfmt(out, cap, L"%ls   %ls", s, t);
+}
+/* asks on the UI thread; returns 1 replace, 2 rename, 3 skip, 4 cancel */
+static int ask_conflict(HWND h, const WCHAR *name, const WCHAR *info_old, const WCHAR *info_new, int remaining, int *apply) {
+    AskReq a; memset(&a, 0, sizeof a); a.kind = 1; a.text = name; a.o = info_old; a.n = info_new; a.remaining = remaining; SendMessageW(h, WM_APP_ASK, 0, (LPARAM)&a); *apply = a.apply; return a.result ? a.result : 4;
+}
 static DWORD WINAPI paste_thread(LPVOID p) {
     PasteJob *j = (PasteJob *)p; int done = 0, fail = 0, apply = 0, mode = 0;   /* mode 1 replace 2 both 3 skip */
     for (int i = 0; i < j->srcs.n; i++) {
@@ -2343,18 +2354,16 @@ static DWORD WINAPI paste_thread(LPVOID p) {
         else if (path_exists(dst)) {
             int m = mode;
             if (!apply) {
-                WCHAR msg[MAX_PATH + 200]; wfmt(msg, MAX_PATH + 200, L"\"%ls\" already exists in the destination.\n\nYes = Replace\nNo = Keep both\nCancel = Skip", nm);
-                int r = ask_ui(j->hwnd, msg, L"Name conflict", MB_YESNOCANCEL | MB_ICONQUESTION);
-                m = r == IDYES ? 1 : r == IDNO ? 2 : 3;
-                if (j->srcs.n - i > 1 && ask_ui(j->hwnd, L"Do this for the remaining conflicts?", L"Name conflict", MB_YESNO) == IDYES) { apply = 1; mode = m; }
+                WCHAR io[200], in[200]; file_info_str(dst, io, 200); file_info_str(src, in, 200); int ap = 0; int r = ask_conflict(j->hwnd, nm, io, in, j->srcs.n - i - 1, &ap);
+                if (r == 4) break; m = r; if (ap) { apply = 1; mode = m; }
             }
             if (m == 3) continue;
             if (m == 2) unique_name(j->dest, nm, dir_exists(src), dst, MAX_PATH);
-            else delete_tree(dst);
+            else if (!dir_exists(src)) clear_ro(dst);      /* Replace: files are overwritten, folders are merged */
         }
         int ok;
         if (j->move) {
-            ok = MoveFileExW(src, dst, MOVEFILE_COPY_ALLOWED) != 0;
+            ok = MoveFileExW(src, dst, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING) != 0;
             if (!ok) { ok = copy_tree(src, dst); if (ok) delete_tree(src); }
         } else ok = copy_tree(src, dst);
         if (ok) done++; else fail++;
@@ -2421,9 +2430,11 @@ static void new_item(int folder) {
     for (int i = 0; i < t->nv; i++) if (wieq(t->it[t->view[i]].path, p)) { sel_view(i, 0, 0); break; }
     begin_rename();
 }
+static void gs_open(const WCHAR *file);
 static void open_item(Item *it) {
     if (!it) return;
     if (it->dir) { navigate(it->path, 1); return; }
+    if (ext_in(it->path, L".gs.")) { gs_open(it->path); return; }
     sl_front(&C.recent_files, it->path, 20);
     WCHAR dir[MAX_PATH]; parent_of(it->path, dir);
     { const WCHAR *ex = PathFindExtensionW(it->path);
@@ -2458,6 +2469,7 @@ static void open_cmd(void) {
 typedef struct PMenu PMenu;
 typedef struct { WCHAR text[200]; WCHAR acc[40]; int id, flags, has_sw; COLORREF sw; PMenu *sub; } PMItem;
 struct PMenu { PMItem *it; int n, cap; };
+static void menu_item_icon(HDC dc, const PMItem *it, const RECT *r, COLORREF fg);
 static PMenu *pm_new(void) { return (PMenu *)calloc(1, sizeof(PMenu)); }
 static PMItem *pm_push(PMenu *m) {
     if (m->n == m->cap) { m->cap = m->cap ? m->cap * 2 : 16; m->it = (PMItem *)realloc(m->it, m->cap * sizeof(PMItem)); }
@@ -2522,6 +2534,7 @@ static void pm_paint(HWND hw) {
             if (it->flags & PMF_RADIO) { RECT e = { cx - 3, cy - 3, cx + 4, cy + 4 }; ellipsec(m, &e, fg, fg, 1); }
             else { linec(m, cx - 4, cy, cx - 1, cy + 3, fg, 2); linec(m, cx - 1, cy + 3, cx + 5, cy - 4, fg, 2); }
         }
+        else if (it->id && !(it->flags & (PMF_HEAD | PMF_SEP)) && C.menu_icons) menu_item_icon(m, it, &r, fg);
         if (it->has_sw) { RECT sw = { r.left + px(6), r.top + h / 2 - px(7), r.left + px(6) + px(14), r.top + h / 2 + px(7) }; rrect(m, &sw, it->sw, p->border, 3, 1); tx = r.left + px(26); }
         RECT tr = { tx, r.top, r.right - pad - (it->acc[0] ? text_w(m, it->acc) + px(24) : 0) - (it->sub ? px(14) : 0), r.bottom }; textr(m, it->text, &tr, TL, fg);
         if (it->acc[0]) { RECT ar = { r.right - pad - text_w(m, it->acc) - px(4), r.top, r.right - pad, r.bottom }; textr(m, it->acc, &ar, TL | DT_RIGHT, hot && st->sel_solid ? fg : p->dim); }
@@ -2656,7 +2669,7 @@ enum { R_HEAD, R_NOTE, R_CHECK, R_CHOICE, R_SPIN, R_BTN, R_ITEM, R_SWATCH, R_LAB
 typedef struct { int type, id; WCHAR text[300], sub[300]; int *iv; int mn, mx, st, nopts, sel, enabled; const WCHAR *const *opts; u32 chips[6]; COLORREF col; } Row;
 typedef struct Dlg {
     WCHAR title[96]; int w, h; Row *rows; int nr, cap; int scroll, total;
-    int ntab; WCHAR tabs[10][40]; int tab;
+    int ntab; WCHAR tabs[12][40]; int tab;
     int nbtn; struct { WCHAR t[40]; int id, primary; } btns[4];
     void (*build)(struct Dlg *); int (*act)(struct Dlg *, Row *, int); void *user;
     HWND hw, owner; int done, result, hover, dragsb, sb_off; RECT rc_body, rc_cap, rc_close, rc_tabs, rc_foot, rc_btn[4], rc_sb; RECT *rrc; int rrc_cap;
@@ -2853,6 +2866,58 @@ static int fm_msgbox(const WCHAR *text, const WCHAR *title, UINT flags) {
     int r = dlg_run(&d); if (!r) r = (k == MB_YESNO) ? IDNO : (k == MB_OK ? IDOK : IDCANCEL); return r;
 }
 
+/* ---- "file already exists" window (Replace / Rename / Skip / Cancel + apply to all) ---- */
+typedef struct { int apply; const WCHAR *name, *info_old, *info_new; int remaining; } CflCtx;
+static void cfl_build(Dlg *d) { CflCtx *c = (CflCtx *)d->user; dlg_head(d, L"This name already exists here"); dlg_note(d, c->name); dlg_kv(d, L"Existing", c->info_old); dlg_kv(d, L"New", c->info_new); if (c->remaining > 0) dlg_check(d, 1, L"Apply to all remaining files", &c->apply); }
+static int cfl_act(Dlg *d, Row *r, int id) { (void)d; if (r) return 0; return id; }
+/* returns 1 replace, 2 rename (keep both), 3 skip, 4 cancel the whole operation */
+static int conflict_dialog(const WCHAR *name, const WCHAR *info_old, const WCHAR *info_new, int remaining, int *apply) {
+    CflCtx c; c.apply = 0; c.name = name; c.info_old = info_old; c.info_new = info_new; c.remaining = remaining; Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"File already exists"); d.user = &c; d.w = px(580); d.h = px(340); d.build = cfl_build; d.act = cfl_act;
+    dlg_foot(&d, 1, L"Replace", 1); dlg_foot(&d, 2, L"Rename", 0); dlg_foot(&d, 3, L"Skip", 0); dlg_foot(&d, 4, L"Cancel", 0);
+    int r = dlg_run(&d); if (r < 1 || r > 4) r = 4; *apply = c.apply; return r;
+}
+/* ---- small text-input window (name fields) ---- */
+typedef struct { WCHAR *buf; int cap, done, ok; HWND ed; } InBox;
+static InBox *g_inbox;
+static LRESULT CALLBACK inbox_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    if (g_inbox) { if (m == WM_COMMAND) { if (LOWORD(wp) == IDOK) { GetWindowTextW(g_inbox->ed, g_inbox->buf, g_inbox->cap); g_inbox->ok = 1; g_inbox->done = 1; return 0; } if (LOWORD(wp) == IDCANCEL) { g_inbox->done = 1; return 0; } } if (m == WM_CLOSE) { g_inbox->done = 1; return 0; } }
+    return DefWindowProcW(h, m, wp, lp);
+}
+static int fm_input(const WCHAR *title, const WCHAR *prompt, WCHAR *buf, int cap) {
+    static int reg; if (!reg) { reg = 1; WNDCLASSEXW wc; memset(&wc, 0, sizeof wc); wc.cbSize = sizeof wc; wc.lpfnWndProc = inbox_proc; wc.hInstance = GetModuleHandleW(NULL); wc.hCursor = LoadCursorW(NULL, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); wc.lpszClassName = L"WinShellFM.InBox"; RegisterClassExW(&wc); }
+    HWND owner = g_dlg_top ? g_dlg_top : S.hwnd; RECT or_; GetWindowRect(owner, &or_); int w = px(440), h = px(170); int x = (or_.left + or_.right - w) / 2, y = (or_.top + or_.bottom - h) / 2; if (x < 0) x = 0; if (y < 0) y = 0;
+    HWND hw = CreateWindowExW(WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, L"WinShellFM.InBox", title, WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, owner, NULL, GetModuleHandleW(NULL), NULL); if (!hw) return 0;
+    HFONT f = S.font ? S.font : (HFONT)GetStockObject(DEFAULT_GUI_FONT); HWND st = CreateWindowExW(0, L"STATIC", prompt, WS_CHILD | WS_VISIBLE, px(14), px(14), w - px(40), px(24), hw, NULL, NULL, NULL);
+    HWND ed = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", buf, WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, px(14), px(42), w - px(44), px(26), hw, NULL, NULL, NULL);
+    HWND ok = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, w - px(240), px(84), px(100), px(30), hw, (HMENU)(INT_PTR)IDOK, NULL, NULL);
+    HWND ca = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP, w - px(130), px(84), px(100), px(30), hw, (HMENU)(INT_PTR)IDCANCEL, NULL, NULL);
+    SendMessageW(st, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(ed, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(ok, WM_SETFONT, (WPARAM)f, TRUE); SendMessageW(ca, WM_SETFONT, (WPARAM)f, TRUE);
+    InBox b; b.buf = buf; b.cap = cap; b.done = 0; b.ok = 0; b.ed = ed; InBox *prev = g_inbox; g_inbox = &b; EnableWindow(owner, FALSE); ShowWindow(hw, SW_SHOW); SetForegroundWindow(hw); SetFocus(ed); SendMessageW(ed, EM_SETSEL, 0, -1);
+    MSG msg; while (!b.done) { if (GetMessageW(&msg, NULL, 0, 0) <= 0) { PostQuitMessage((int)msg.wParam); break; } if (!IsDialogMessageW(hw, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); } }
+    EnableWindow(owner, TRUE); g_inbox = prev; DestroyWindow(hw); SetForegroundWindow(owner); return b.ok;
+}
+
+/* ---- file dialogs that also work under Wine/Winlator ---------------------------------------------
+   Explorer-style common dialog first; if the system cannot open it (CommDlgExtendedError != 0) fall back to the
+   shell folder tree that also lists files, so choosing an image/file never silently does nothing. */
+static int fm_shell_pick(HWND owner, const WCHAR *title, WCHAR *out, int folders_only) {
+    BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = owner; bi.lpszTitle = title ? title : L"Choose"; bi.ulFlags = BIF_NEWDIALOGSTYLE | (folders_only ? BIF_RETURNONLYFSDIRS : BIF_BROWSEINCLUDEFILES);
+    LPITEMIDLIST pl = SHBrowseForFolderW(&bi); if (!pl) return 0; BOOL ok = SHGetPathFromIDListW(pl, out); CoTaskMemFree(pl); return ok && out[0];
+}
+static int fm_getopen(OPENFILENAMEW *o) {
+    o->Flags |= OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_HIDEREADONLY; if (GetOpenFileNameW(o)) return 1;
+    if (CommDlgExtendedError() == 0) return 0;                       /* user pressed Cancel */
+    WCHAR tmp[MAX_PATH]; tmp[0] = 0; if (!fm_shell_pick(o->hwndOwner, o->lpstrTitle, tmp, 0)) return 0;
+    if (o->nMaxFile < (DWORD)lstrlenW(tmp) + 2) return 0; lstrcpyW(o->lpstrFile, tmp); o->lpstrFile[lstrlenW(tmp) + 1] = 0; return 1;
+}
+static int fm_getsave(OPENFILENAMEW *o) {
+    o->Flags |= OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_HIDEREADONLY; if (GetSaveFileNameW(o)) return 1;
+    if (CommDlgExtendedError() == 0) return 0;
+    WCHAR dir[MAX_PATH]; dir[0] = 0; if (!fm_shell_pick(o->hwndOwner, o->lpstrTitle ? o->lpstrTitle : L"Choose the folder to save into", dir, 1)) return 0;
+    WCHAR name[MAX_PATH]; lstrcpynW(name, o->lpstrFile, MAX_PATH); const WCHAR *b = wcsrchr(name, '\\'); b = b ? b + 1 : name; WCHAR full[MAX_PATH]; int l = lstrlenW(dir); wsprintfW(full, L"%ls%ls%ls", dir, (l && dir[l - 1] == '\\') ? L"" : L"\\", b);
+    if (o->nMaxFile < (DWORD)lstrlenW(full) + 1) return 0; lstrcpyW(o->lpstrFile, full); return 1;
+}
+
 /* ---- shared globals and the command enum (included before the preview engine) ---- */
 static int g_mx = -1, g_my = -1, g_fmx = -1, g_fmy = -1;
 enum {
@@ -2868,8 +2933,8 @@ enum {
     CMD_THUMB_IMG, CMD_THUMB_VID, CMD_THUMB_GFX, CMD_DRAGDROP, CMD_RUBBER, CMD_ADMINMENU, CMD_COUNTS, CMD_CLEARHIST, CMD_PVSIDE, CMD_ADDSEARCH, CMD_PVPLAY,
     CMD_FOLDERFIRST, CMD_NEWWIN, CMD_SETICON_EXT, CMD_SETICON_DIR, CMD_EXTRACT_MENU, CMD_PVCLOSE, CMD_SRCH_HIST0 = 700, CMD_SRCH_PIN0 = 760, CMD_SRCH_EXT0 = 820, CMD_SRCH_PINCUR = 880, CMD_SRCH_CLEAR, CMD_SRCH_UNPIN0 = 900, CMD_OW0 = 2000, CMD_OW_MORE = 2400,
     CMD_DELETE_PERM = 5000, CMD_RESTORE_TRASH, CMD_EMPTY_TRASH, CMD_TRASH, CMD_APPS, CMD_APP_ADD, CMD_APP_UP, CMD_APP_DOWN, CMD_APP_TOP, CMD_APP_REMOVE, CMD_APP_RESET,
-    CMD_LAYOUT_EDIT, CMD_LAYOUT_SAVE, CMD_LAYOUT_RESET, CMD_LAYOUT_NAVSIDE, CMD_FIT_PAGE, CMD_LOADBIG, CMD_BACKUP_FULL, CMD_RESTORE_FULL, CMD_LAYOUT_LOAD0 = 5100, CMD_LAYOUT_DEL0 = 5150,
-    CMD_GAMES = 5300, CMD_GAME_ADD, CMD_GAME_ADDPATH, CMD_GAME_BACKUP, CMD_GAME_BACKUP_ALL, CMD_GAME_RESTORE, CMD_GAME_REMOVE, CMD_OPEN_VIEWER,
+    CMD_LAYOUT_EDIT, CMD_LAYOUT_DRAG, CMD_LAYOUT_SAVE, CMD_LAYOUT_RESET, CMD_LAYOUT_NAVSIDE, CMD_FIT_PAGE, CMD_LOADBIG, CMD_BACKUP_FULL, CMD_RESTORE_FULL, CMD_LAYOUT_LOAD0 = 5100, CMD_LAYOUT_DEL0 = 5150,
+    CMD_GAMES = 5300, CMD_GAME_ADD, CMD_GAME_ADDPATH, CMD_GAME_BACKUP, CMD_GAME_BACKUP_ALL, CMD_GAME_RESTORE, CMD_GAME_REMOVE, CMD_OPEN_VIEWER, CMD_GAME_OPENGS, CMD_GAME_ICON, CMD_GS_ASSOC, CMD_NAV_UP, CMD_NAV_DOWN, CMD_NAV_TOP, CMD_NAV_HIDE, CMD_NAV_ADD, CMD_NAV_REMOVE, CMD_NAV_RESET, CMD_NAV_SHOW0 = 5400,
     CMD_TAB0 = 200, CMD_STYLE0 = 300, CMD_THEME0 = 340, CMD_ACCENT0 = 360, CMD_AUTOREM0 = 400, CMD_COLOR0 = 460, CMD_PVBTN0 = 600
 };
 static int g_tab_ctx = 0, g_safe = 0, g_force_big = 0;
@@ -3376,7 +3441,7 @@ static u8 *read_whole(const WCHAR *path, size_t *n, size_t cap) {
     CloseHandle(f.h); *n = (size_t)r.size; return b;
 }
 static int arc_kind_of(const WCHAR *p) {
-    if (ext_in(p, L".zip.jar.apk.docx.xlsx.pptx.odt.epub.")) return ARC_ZIP; if (ext_in(p, L".tar.")) return ARC_TAR; if (ext_in(p, L".tgz.")) return ARC_TGZ;
+    if (ext_in(p, L".zip.jar.apk.docx.xlsx.pptx.odt.epub.gs.")) return ARC_ZIP; if (ext_in(p, L".tar.")) return ARC_TAR; if (ext_in(p, L".tgz.")) return ARC_TGZ;
     int l = lstrlenW(p); if (l > 7 && !_wcsicmp(p + l - 7, L".tar.gz")) return ARC_TGZ; if (ext_in(p, L".gz.")) return ARC_GZ; if (ext_in(p, L".iso.")) return ARC_ISO;
     if (ext_in(p, L".7z.rar.bz2.xz.cab.lzh.arj.z.wim.")) return ARC_EXT; return ARC_NONE;
 }
@@ -3395,8 +3460,19 @@ static int find_tool(const WCHAR *const *names, WCHAR *out) {
         WCHAR f[MAX_PATH]; lstrcpyW(f, names[i]); if (PathFindOnPathW(f, NULL)) { lstrcpyW(out, f); return 1; }
     } return 0;
 }
-static int find_7z(WCHAR *o) { static const WCHAR *n[] = { L"7z.exe", L"7za.exe", L"7zr.exe", NULL }; return find_tool(n, o); }
-static int find_rar(WCHAR *o) { static const WCHAR *n[] = { L"rar.exe", L"UnRAR.exe", L"WinRAR.exe", NULL }; return find_tool(n, o); }
+static int tool_is_rar(const WCHAR *p) { const WCHAR *b = base_name(p); return StrStrIW(b, L"rar") != NULL && StrStrIW(b, L"7z") == NULL; }
+static int find_7z(WCHAR *o) {   /* the exe chosen in Settings wins, then registry / Program Files (x86 and x64) / app folder / PATH */
+    const WCHAR *u[2] = { C.tool_7z, C.tool_rar }; for (int i = 0; i < 2; i++) if (u[i][0] && path_exists(u[i]) && !tool_is_rar(u[i])) { scpy(o, MAX_PATH, u[i]); return 1; }
+    static const WCHAR *n[] = { L"7z.exe", L"7za.exe", L"7zr.exe", NULL }; return find_tool(n, o);
+}
+static int find_rar(WCHAR *o) {
+    const WCHAR *u[2] = { C.tool_rar, C.tool_7z }; for (int i = 0; i < 2; i++) if (u[i][0] && path_exists(u[i]) && tool_is_rar(u[i])) { scpy(o, MAX_PATH, u[i]); return 1; }
+    static const WCHAR *n[] = { L"rar.exe", L"UnRAR.exe", L"WinRAR.exe", NULL }; return find_tool(n, o);
+}
+static int find_rar_console(WCHAR *o) {   /* rar.exe / UnRAR.exe can list; WinRAR.exe (GUI) cannot */
+    const WCHAR *u[2] = { C.tool_rar, C.tool_7z }; for (int i = 0; i < 2; i++) if (u[i][0] && path_exists(u[i]) && tool_is_rar(u[i]) && !StrStrIW(base_name(u[i]), L"winrar")) { scpy(o, MAX_PATH, u[i]); return 1; }
+    static const WCHAR *n[] = { L"UnRAR.exe", L"rar.exe", NULL }; return find_tool(n, o);
+}
 /* run a command line, capture stdout (up to cap bytes), returns exit code or -1 */
 static int run_capture(WCHAR *cmdline, char **out, size_t *outn, DWORD timeout) {
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE }; HANDLE rd = NULL, wr = NULL; if (!CreatePipe(&rd, &wr, &sa, 0)) return -1; SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
@@ -3409,8 +3485,17 @@ static int run_capture(WCHAR *cmdline, char **out, size_t *outn, DWORD timeout) 
     if (out) *out = b; else free(b); if (outn) *outn = n; return (int)ec;
 }
 /* ---- listing through 7-Zip ---- */
+static int ext_list_rar(const WCHAR *path, FArc *a) {
+    WCHAR z[MAX_PATH]; if (!find_rar_console(z)) return -1; WCHAR cmd[MAX_PATH * 2 + 40]; wfmt(cmd, MAX_PATH * 2 + 40, L"\"%ls\" vt -c- \"%ls\"", z, path);
+    char *o; size_t n; int ec = run_capture(cmd, &o, &n, 20000); if (ec < 0) return -1; memset(a, 0, sizeof *a); a->kind = ARC_EXT; int cap = 0; char *p = o; char name[1024] = ""; u64 size = 0; int isdir = 0, have = 0;
+    while (*p) { char *e = strchr(p, '\n'); size_t l = e ? (size_t)(e - p) : strlen(p); char line[1100]; if (l > 1090) l = 1090; memcpy(line, p, l); line[l] = 0; if (l && line[l - 1] == '\r') line[--l] = 0; const char *s = line; while (*s == ' ') s++;
+        if (!strncmp(s, "Name: ", 6)) { if (have) { AEnt *x = arc_push(a, &cap, name, strlen(name)); x->size = size; x->isdir = isdir; } snprintf(name, sizeof name, "%s", s + 6); for (char *c = name; *c; c++) if (*c == '\\') *c = '/'; size = 0; isdir = 0; have = 1; }
+        else if (!strncmp(s, "Type: ", 6)) isdir = !strncmp(s + 6, "Directory", 9); else if (!strncmp(s, "Size: ", 6)) size = strtoull(s + 6, NULL, 10);
+        if (!e) break; p = e + 1; }
+    if (have) { AEnt *x = arc_push(a, &cap, name, strlen(name)); x->size = size; x->isdir = isdir; } free(o); return have ? 0 : -1;
+}
 static int ext_list(const WCHAR *path, FArc *a) {
-    WCHAR z[MAX_PATH]; if (!find_7z(z)) return -1; WCHAR cmd[MAX_PATH * 2 + 40]; wfmt(cmd, MAX_PATH * 2 + 40, L"\"%ls\" l -slt -ba -sccUTF-8 \"%ls\"", z, path);
+    WCHAR z[MAX_PATH]; if (!find_7z(z)) return ext_list_rar(path, a); WCHAR cmd[MAX_PATH * 2 + 40]; wfmt(cmd, MAX_PATH * 2 + 40, L"\"%ls\" l -slt -ba -sccUTF-8 \"%ls\"", z, path);
     char *o; size_t n; int ec = run_capture(cmd, &o, &n, 20000); if (ec < 0) return -1; memset(a, 0, sizeof *a); a->kind = ARC_EXT; int cap = 0; char *p = o; char name[1024] = ""; u64 size = 0; int isdir = 0, have = 0;
     while (*p) { char *e = strchr(p, '\n'); size_t l = e ? (size_t)(e - p) : strlen(p); char line[1100]; if (l > 1090) l = 1090; memcpy(line, p, l); line[l] = 0; if (l && line[l - 1] == '\r') line[--l] = 0;
         if (!strncmp(line, "Path = ", 7)) { if (have) { AEnt *x = arc_push(a, &cap, name, strlen(name)); x->size = size; x->isdir = isdir; } snprintf(name, sizeof name, "%s", line + 7); size = 0; isdir = 0; have = 1; }
@@ -3419,7 +3504,7 @@ static int ext_list(const WCHAR *path, FArc *a) {
     if (have) { AEnt *x = arc_push(a, &cap, name, strlen(name)); x->size = size; x->isdir = isdir; } free(o); return 0;
 }
 /* ---- extraction ---- */
-typedef struct { WCHAR src[MAX_PATH], dest[MAX_PATH]; HWND hwnd; } ExJob;
+typedef struct { WCHAR src[MAX_PATH], dest[MAX_PATH]; HWND hwnd; int mode; char *sel; int nsel; SL names; } ExJob;
 typedef struct { WCHAR out[MAX_PATH], fmt[8]; SL srcs; HWND hwnd; } CoJob;
 static int ensure_dirs(WCHAR *path) {   /* creates all parents of a file path (or the dir itself if trailing '\\') */
     for (WCHAR *p = path + 3; *p; p++) if (*p == '\\') { *p = 0; CreateDirectoryW(path, NULL); *p = '\\'; } return 1;
@@ -3429,17 +3514,27 @@ static int write_file_w(const WCHAR *p, const u8 *d, size_t n) {
     HANDLE h = CreateFileW(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (h == INVALID_HANDLE_VALUE) return -1;
     while (n) { DWORD c = n > (1u << 24) ? (1u << 24) : (DWORD)n, w = 0; if (!WriteFile(h, d, c, &w, NULL) || !w) { CloseHandle(h); return -1; } d += w; n -= w; } CloseHandle(h); return 0;
 }
+static int g_ex_mode = 1, g_ex_applied = 0, g_ex_cancel = 0, g_ex_nsel = 0;   /* mode: 0 ask, 1 replace, 2 skip, 3 rename */
+static HWND g_ex_hwnd; static char *g_ex_sel; static SL g_ex_names;
 static int extract_entry_to(const WCHAR *dest, const AEnt *e, const u8 *data, size_t n) {
     if (!safe_rel(e->name)) return 0; int w = MultiByteToWideChar(CP_UTF8, 0, e->name, -1, NULL, 0); WCHAR *rel = (WCHAR *)malloc((w + 2) * sizeof(WCHAR)); MultiByteToWideChar(CP_UTF8, 0, e->name, -1, rel, w);
     for (WCHAR *c = rel; *c; c++) if (*c == '/') *c = '\\'; WCHAR full[MAX_PATH + 8]; path_join(full, MAX_PATH, dest, rel); free(rel); int ok = 0;
     if (e->isdir) { WCHAR t[MAX_PATH + 8]; wfmt(t, MAX_PATH + 8, L"%ls\\", full); ensure_dirs(t); CreateDirectoryW(full, NULL); ok = 1; }
-    else { ensure_dirs(full); ok = write_file_w(full, data, n) == 0; } return ok;
+    else {
+        ensure_dirs(full);
+        if (path_exists(full)) {
+            int m = g_ex_applied ? g_ex_applied : g_ex_mode; if (m == 0 && !g_ex_hwnd) m = 1;
+            if (m == 0) { WCHAR io[200], in[200]; file_info_str(full, io, 200); wfmt(in, 200, L"%u bytes (from the archive)", (unsigned)n); int ap = 0; int r = ask_conflict(g_ex_hwnd, base_name(full), io, in, 1, &ap); if (r == 4) { g_ex_cancel = 1; return 0; } m = r == 1 ? 1 : r == 2 ? 3 : 2; if (ap) g_ex_applied = m; }
+            if (m == 2) return 1;
+            if (m == 3) { WCHAR par[MAX_PATH], u[MAX_PATH]; parent_of(full, par); unique_name(par, base_name(full), 0, u, MAX_PATH); scpy(full, MAX_PATH + 8, u); } else clear_ro(full);
+        }
+        ok = write_file_w(full, data, n) == 0; } return ok;
 }
 static int do_extract(const WCHAR *src, const WCHAR *dest, WCHAR *msg) {
     int k = arc_kind_of(src); int ok = 0, bad = 0; CreateDirectoryW(dest, NULL); WCHAR d2[MAX_PATH + 4]; wfmt(d2, MAX_PATH + 4, L"%ls\\x", dest); ensure_dirs(d2);
     if (k == ARC_ZIP || k == ARC_ISO) {
         Rd r; FRd f; if (frd_open(&r, &f, src)) { scpy(msg, 160, L"Cannot open archive"); return 0; } FArc a; int rc = k == ARC_ZIP ? zip_open(&a, &r) : iso_open(&a, &r); if (rc) { CloseHandle(f.h); scpy(msg, 160, L"Archive is damaged or unsupported"); return 0; }
-        for (int i = 0; i < a.n; i++) { u8 *d = NULL; size_t n = 0; int rr;
+        for (int i = 0; i < a.n; i++) { u8 *d = NULL; size_t n = 0; int rr; if (g_ex_cancel) break; if (g_ex_sel && i < g_ex_nsel && !g_ex_sel[i]) continue;
             if (k == ARC_ZIP) rr = zip_read_entry(&a, i, &d, &n, 700u << 20); else { n = (size_t)a.e[i].size; rr = 0; if (!a.e[i].isdir) { if (n > (700u << 20)) rr = -10; else { d = (u8 *)malloc(n + 1); if (r.read(&r, a.e[i].off, d, n)) rr = -2; } } }
             if (rr) { bad++; free(d); continue; } if (extract_entry_to(dest, &a.e[i], d, n)) ok++; else bad++; free(d); }
         arc_free(&a); CloseHandle(f.h);
@@ -3448,20 +3543,33 @@ static int do_extract(const WCHAR *src, const WCHAR *dest, WCHAR *msg) {
         if (k != ARC_TAR) { if (gzip_unpack(b, n, &t, &tn, 1u << 30)) { free(b); scpy(msg, 160, L"Not a valid gzip file"); return 0; } free(b); b = t; }
         FArc a; memset(&a, 0, sizeof a); int istar = tn > 512 && !memcmp(t + 257, "ustar", 5);
         if (k == ARC_GZ && !istar) { WCHAR nm[MAX_PATH]; scpy(nm, MAX_PATH, base_name(src)); int l = lstrlenW(nm); if (l > 3) nm[l - 3] = 0; WCHAR out[MAX_PATH]; path_join(out, MAX_PATH, dest, nm); ok = write_file_w(out, t, tn) == 0; }
-        else { tar_scan(&a, t, tn); for (int i = 0; i < a.n; i++) { if (extract_entry_to(dest, &a.e[i], t + a.e[i].off, (size_t)a.e[i].size)) ok++; else bad++; } arc_free(&a); }
+        else { tar_scan(&a, t, tn); for (int i = 0; i < a.n; i++) { if (g_ex_cancel) break; if (g_ex_sel && i < g_ex_nsel && !g_ex_sel[i]) continue; if (extract_entry_to(dest, &a.e[i], t + a.e[i].off, (size_t)a.e[i].size)) ok++; else bad++; } arc_free(&a); }
         free(t);
     } else {
-        WCHAR z[MAX_PATH]; if (!find_7z(z)) { scpy(msg, 160, L"This format needs 7-Zip: put 7z.exe (+7z.dll) next to this program or install 7-Zip"); return 0; }
-        WCHAR cmd[MAX_PATH * 3]; wfmt(cmd, MAX_PATH * 3, L"\"%ls\" x -y -aoa \"-o%ls\" \"%ls\"", z, dest, src); int ec = run_capture(cmd, NULL, NULL, 3600000);
-        if (ec == 0) { scpy(msg, 160, L"Extracted"); return 1; } wfmt(msg, 160, L"7-Zip reported an error (code %d)", ec); return 0;
+        WCHAR z[MAX_PATH]; int have7 = find_7z(z); WCHAR rr[MAX_PATH] = L""; if (!have7 && !find_rar(rr)) { scpy(msg, 160, L"No archive program found. Install 7-Zip or WinRAR (or choose its exe in Settings > Archives)"); return 0; }
+        int m = g_ex_applied ? g_ex_applied : g_ex_mode;
+        if (m == 0) { WCHAR pat[MAX_PATH]; path_join(pat, MAX_PATH, dest, L"*"); WIN32_FIND_DATAW q; HANDLE qh = FindFirstFileW(pat, &q); int any = 0; if (qh != INVALID_HANDLE_VALUE) { do { if (wcscmp(q.cFileName, L".") && wcscmp(q.cFileName, L"..")) any = 1; } while (!any && FindNextFileW(qh, &q)); FindClose(qh); }
+            if (any && g_ex_hwnd) { int ap = 0; int r = ask_conflict(g_ex_hwnd, dest, L"Files with the same names in this folder", L"will be replaced, renamed or skipped as you choose", 0, &ap); if (r == 4) { scpy(msg, 160, L"Cancelled"); return 0; } m = r == 1 ? 1 : r == 2 ? 3 : 2; } else m = 1; }
+        WCHAR *cmd = (WCHAR *)malloc(32768 * sizeof(WCHAR)); int ec;
+        if (have7) wfmt(cmd, 32768, L"\"%ls\" x -y %ls \"-o%ls\" \"%ls\"", z, m == 2 ? L"-aos" : m == 3 ? L"-aou" : L"-aoa", dest, src);
+        else wfmt(cmd, 32768, L"\"%ls\" x -y %ls %ls \"%ls\" \"%ls\\\\\"", rr, m == 2 ? L"-o-" : m == 3 ? L"-or" : L"-o+", StrStrIW(base_name(rr), L"winrar") ? L"-ibck" : L"", src, dest);
+        for (int i = 0; i < g_ex_names.n; i++) { scat(cmd, 32768, L" \""); scat(cmd, 32768, g_ex_names.v[i]); scat(cmd, 32768, L"\""); }
+        ec = run_capture(cmd, NULL, NULL, 3600000); free(cmd);
+        if (ec == 0) { scpy(msg, 160, L"Extracted"); return 1; } wfmt(msg, 160, L"%ls reported an error (code %d)", have7 ? L"7-Zip" : L"WinRAR", ec); return 0;
     }
     if (bad) wfmt(msg, 160, L"Extracted %d item(s), %d failed", ok, bad); else wfmt(msg, 160, L"Extracted %d item(s)", ok); return ok > 0;
 }
 static DWORD WINAPI extract_thread(LPVOID p) {
-    ExJob *j = (ExJob *)p; WCHAR msg[160] = L""; do_extract(j->src, j->dest, msg); scpy(S.status_msg, 160, msg); PostMessageW(j->hwnd, WM_APP_TASKDONE, 0, 0); free(j); return 0;
+    ExJob *j = (ExJob *)p; WCHAR msg[160] = L""; g_ex_mode = j->mode; g_ex_applied = 0; g_ex_cancel = 0; g_ex_hwnd = j->hwnd; g_ex_sel = j->sel; g_ex_nsel = j->nsel; g_ex_names = j->names;
+    do_extract(j->src, j->dest, msg); if (g_ex_cancel) scpy(msg, 160, L"Extraction cancelled");
+    g_ex_mode = 1; g_ex_applied = 0; g_ex_hwnd = NULL; g_ex_sel = NULL; g_ex_nsel = 0; memset(&g_ex_names, 0, sizeof g_ex_names);
+    scpy(S.status_msg, 160, msg); PostMessageW(j->hwnd, WM_APP_TASKDONE, 0, 0); free(j->sel); sl_clear(&j->names); free(j->names.v); free(j); return 0;
 }
-static void start_extract(const WCHAR *src, const WCHAR *dest) {
-    if (InterlockedCompareExchange(&S.busy, 1, 0)) { toast(L"Another operation is running"); return; } ExJob *j = (ExJob *)calloc(1, sizeof *j); scpy(j->src, MAX_PATH, src); scpy(j->dest, MAX_PATH, dest); j->hwnd = S.hwnd;
+static void start_extract_ex(const WCHAR *src, const WCHAR *dest, int mode, char *sel, int nsel, SL *names);
+static void start_extract(const WCHAR *src, const WCHAR *dest) { start_extract_ex(src, dest, 0, NULL, 0, NULL); }
+static void start_extract_ex(const WCHAR *src, const WCHAR *dest, int mode, char *sel, int nsel, SL *names) {
+    if (InterlockedCompareExchange(&S.busy, 1, 0)) { toast(L"Another operation is running"); free(sel); return; } ExJob *j = (ExJob *)calloc(1, sizeof *j); scpy(j->src, MAX_PATH, src); scpy(j->dest, MAX_PATH, dest); j->hwnd = S.hwnd; j->mode = mode; j->sel = sel; j->nsel = nsel;
+    if (names) for (int i = 0; i < names->n; i++) sl_add(&j->names, names->v[i]);
     scpy(S.status_msg, 160, L"Extracting..."); redraw(); HANDLE h = CreateThread(NULL, 0, extract_thread, j, 0, NULL); if (h) CloseHandle(h);
 }
 /* ---- compression ---- */
@@ -3516,7 +3624,12 @@ static DWORD WINAPI compress_thread(LPVOID p) {
     }
     scpy(S.status_msg, 160, msg); PostMessageW(j->hwnd, WM_APP_TASKDONE, 0, 0); sl_clear(&j->srcs); free(j->srcs.v); free(j); return 0;
 }
-static void start_compress(const WCHAR *fmt) {
+static void start_compress_job(SL *s, const WCHAR *fmt, const WCHAR *out) {   /* takes ownership of s' strings */
+    if (InterlockedCompareExchange(&S.busy, 1, 0)) { toast(L"Another operation is running"); sl_clear(s); free(s->v); return; }
+    CoJob *j = (CoJob *)calloc(1, sizeof *j); j->srcs = *s; j->hwnd = S.hwnd; scpy(j->fmt, 8, fmt); scpy(j->out, MAX_PATH, out);
+    scpy(S.status_msg, 160, L"Compressing..."); redraw(); HANDLE h = CreateThread(NULL, 0, compress_thread, j, 0, NULL); if (h) CloseHandle(h);
+}
+static void start_compress_quick(const WCHAR *fmt) {
     Tab *t = curtab(); SL s = { 0 }; collect_sel(t, &s); if (!s.n) { toast(L"Select files or folders first"); free(s.v); return; }
     if (InterlockedCompareExchange(&S.busy, 1, 0)) { toast(L"Another operation is running"); sl_clear(&s); free(s.v); return; }
     CoJob *j = (CoJob *)calloc(1, sizeof *j); j->srcs = s; j->hwnd = S.hwnd; scpy(j->fmt, 8, fmt);
@@ -3570,7 +3683,7 @@ static void pv_load_archive(const WCHAR *path) {
     else if (k == ARC_TAR || k == ARC_TGZ || k == ARC_GZ) { size_t n; u8 *b = read_whole(path, &n, 400u << 20); if (b) { u8 *t = b; size_t tn = n; rc = 0; if (k != ARC_TAR) { if (gzip_unpack(b, n, &t, &tn, 600u << 20)) rc = -1; else { free(b); b = t; } }
         if (!rc) { if (k == ARC_GZ && !(tn > 512 && !memcmp(t + 257, "ustar", 5))) { int cap = 0; WCHAR nm[MAX_PATH]; scpy(nm, MAX_PATH, base_name(path)); int l = lstrlenW(nm); if (l > 3) nm[l - 3] = 0; char u[MAX_PATH * 3]; WideCharToMultiByte(CP_UTF8, 0, nm, -1, u, sizeof u, NULL, NULL); AEnt *e = arc_push(&a, &cap, u, strlen(u)); e->size = tn; }
             else tar_scan(&a, t, tn); } free(b); } }
-    else { rc = ext_list(path, &a); if (rc) { pv_set_err(L"This archive type needs 7-Zip to preview/extract.\nPut 7z.exe (and 7z.dll) next to this program or install 7-Zip."); g_pv.canext = 0; return; } }
+    else { rc = ext_list(path, &a); if (rc) { { WCHAR tp[MAX_PATH]; if (find_7z(tp) || find_rar_console(tp)) { WCHAR em[MAX_PATH + 200]; wfmt(em, MAX_PATH + 200, L"%ls is installed (%ls),\nbut it could not list this archive (damaged, encrypted or unsupported).", tool_is_rar(tp) ? L"WinRAR" : L"7-Zip", tp); pv_set_err(em); } else pv_set_err(L"This archive type needs 7-Zip or WinRAR to preview/extract.\nInstall one of them (or choose its exe in Settings > Archives & Games)."); } g_pv.canext = 0; return; } }
     if (rc) { pv_set_err(L"Archive is damaged or unsupported"); if (opened) CloseHandle(f.h); arc_free(&a); return; }
     WCHAR nm[MAX_PATH]; scpy(nm, MAX_PATH, base_name(path)); pv_build_arc(&a, nm); g_pv.canext = 1; arc_free(&a); if (opened) CloseHandle(f.h);
 }
@@ -3587,6 +3700,21 @@ static void pv_build_info(const Item *it) {
     WIN32_FILE_ATTRIBUTE_DATA ad; if (GetFileAttributesExW(it->path, GetFileExInfoStandard, &ad)) { fmt_date(&ad.ftCreationTime, b, 260); pv_info_add(L"Created", b); fmt_date(&ad.ftLastWriteTime, b, 260); pv_info_add(L"Modified", b);
         wfmt(b, 260, L"%ls%ls%ls%ls", ad.dwFileAttributes & FILE_ATTRIBUTE_READONLY ? L"Read-only  " : L"", ad.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN ? L"Hidden  " : L"", ad.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM ? L"System  " : L"", ad.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE ? L"Archive" : L""); pv_info_add(L"Attributes", b[0] ? b : L"Normal"); }
     if (!it->dir) pv_info_add(L"Preview", L"Not available for this type - double-click to open it");
+}
+/* the program that "owns" a file type for the preview panel: the one you associated, else the installed archiver for archives */
+static int preview_app_for(const WCHAR *path, WCHAR *out) {
+    out[0] = 0; const WCHAR *e = PathFindExtensionW(path); if (!*e) return 0; int el = lstrlenW(e);
+    for (int i = 0; i < C.assoc_prev.n; i++) { const WCHAR *b = wcschr(C.assoc_prev.v[i], '|'); if (b && (int)(b - C.assoc_prev.v[i]) == el && !_wcsnicmp(C.assoc_prev.v[i], e, el) && path_exists(b + 1)) { scpy(out, MAX_PATH, b + 1); return 1; } }
+    if (arc_kind_of(path) == ARC_EXT) { if (!_wcsicmp(e, L".rar")) { if (find_rar(out)) return 1; } if (find_7z(out)) return 1; if (find_rar(out)) return 1; }
+    return 0;
+}
+/* the launcher icon packed inside an .apk (largest ic_launcher png), cached on disk */
+static int apk_icon_file(const WCHAR *apk, WCHAR *out) {
+    static WCHAR last[MAX_PATH], lastout[MAX_PATH]; static int lastok; if (!wcscmp(last, apk)) { scpy(out, MAX_PATH, lastout); return lastok; }
+    scpy(last, MAX_PATH, apk); lastout[0] = 0; lastok = 0; out[0] = 0; Rd r; FRd f; if (frd_open(&r, &f, apk)) return 0; FArc a; if (zip_open(&a, &r)) { CloseHandle(f.h); return 0; }
+    int best = -1; u64 bs = 0; for (int i = 0; i < a.n; i++) { const char *n = a.e[i].name; size_t l = strlen(n); if (a.e[i].isdir || l < 5 || _stricmp(n + l - 4, ".png")) continue; if (!strstr(n, "ic_launcher") && !strstr(n, "/icon.") && !strstr(n, "app_icon")) continue; if (strstr(n, "round") && best >= 0) continue; if (a.e[i].size > bs && a.e[i].size < (3u << 20)) { bs = a.e[i].size; best = i; } }
+    if (best >= 0) { u8 *d = NULL; size_t n = 0; if (!zip_read_entry(&a, best, &d, &n, 4u << 20) && d && n > 8) { WCHAR dd[MAX_PATH], nm[40]; path_join(dd, MAX_PATH, CONFIG_DIR, L"apk_icons"); CreateDirectoryW(dd, NULL); unsigned h = 5381; for (const WCHAR *c = apk; *c; c++) h = h * 33 + *c; wfmt(nm, 40, L"%08x.png", h); path_join(lastout, MAX_PATH, dd, nm); lastok = write_file_w(lastout, d, n) == 0; } free(d); }
+    arc_free(&a); CloseHandle(f.h); scpy(out, MAX_PATH, lastout); return lastok;
 }
 static void preview_update(void) {
     preview_free(); Tab *t = curtab(); Item *it = NULL; int ns = sel_count(t, NULL);
@@ -3605,7 +3733,7 @@ static void preview_update(void) {
     case 2: g_pv.kind = PK_MEDIA; if (C.video_mode == 0 || pv_is_audio(it->path)) { RECT r = { 0, 0, 16, 16 }; vid_open(it->path, S.hwnd, &r, !pv_is_audio(it->path)); } break;
     case 3: pv_load_pdf(it->path); break;
     case 4: pv_load_office(it->path, 1); break; case 5: pv_load_office(it->path, 2); break; case 6: pv_load_office(it->path, 3); break;
-    case 7: pv_load_archive(it->path); break;
+    case 7: if (C.arc_list || g_force_big) pv_load_archive(it->path); break;   /* default: thumbnail (app icon + info); listing is a Performance-tab option */
     }
     if (g_pv.kind == PK_ERROR && g_force_big && C.confirm_ops) fm_msgbox(g_pv.err, L"Preview could not be loaded", MB_OK | MB_ICONWARNING);
     int *pz[8] = { &C.pvsz0, &C.pvsz1, &C.pvsz2, &C.pvsz3, &C.pvsz4, &C.pvsz5, &C.pvsz6, &C.pvsz7 };
@@ -3646,7 +3774,7 @@ static void doc_fonts_load(void) {
 }
 static void add_font_file(void) {
     WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Fonts (*.ttf;*.otf;*.ttc)\0*.ttf;*.otf;*.ttc\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (!GetOpenFileNameW(&o)) return; if (!AddFontResourceExW(f, FR_PRIVATE, 0)) { toast(L"Could not load that font file"); return; } if (sl_find(&C.doc_fonts, f) < 0) sl_add(&C.doc_fonts, f);
+    if (!fm_getopen(&o)) return; if (!AddFontResourceExW(f, FR_PRIVATE, 0)) { toast(L"Could not load that font file"); return; } if (sl_find(&C.doc_fonts, f) < 0) sl_add(&C.doc_fonts, f);
     WCHAR fam[64]; if (ttf_family(f, fam, 64)) { scpy(C.doc_font, 64, fam); } pv_font_reset(); cfg_save(); preview_update(); toast(L"Font added and selected");
 }
 static WCHAR g_fontnames[260][40]; static int g_nfonts;
@@ -3765,13 +3893,15 @@ static void pv_open_full(void) {
 /* LAYOUT                                                                     */
 /* ========================================================================== */
 typedef struct {
-    RECT caption, capbtn[3], ribtabs, ribtab[6], ribcol, strip, navbar, tabs, nav, content, preview, split, status, hdr, body, sb;
+    RECT caption, capbtn[3], ribtabs, ribtab[8], ribcol, strip, navbar, tabs, nav, content, preview, split, status, hdr, body, sb;
     RECT back, fwd, up, refresh, menu, addr, search, sub, sdrop, osb, cmdb, setb, views[3]; int capkind, has_strip;
 } Lay;
 static Lay LY;
 static int g_nav_dirty = 1, g_maxed;
 static RECT g_tabr[FM_MAXTABS], g_tabplus, g_rb[24]; static int g_rb_id[24], g_nrb;
-static const WCHAR *RIB_TABS[6] = { L"File", L"Home", L"Share", L"View", L"Style & Look", L"Tools" };
+static const WCHAR *RIB_TABS[8] = { L"File", L"Home", L"Share", L"View", L"Style & Look", L"Tools", L"Computer", L"Games" };
+#define RIB_N 8
+static const WCHAR *rib_name(int i);
 static void draw_thispc(HDC dc);
 static COLORREF lay_col(const WCHAR *id, COLORREF def);
 static void lay_draw_launchers(HDC dc);
@@ -3779,6 +3909,7 @@ static void lay_overlay(HDC dc, int W, int H);
 static void lay_paint_widgets(HDC dc);
 static void paint_drive(HDC dc, int x, int y, int s, COLORREF col);
 static int draw_custom_icon2(HDC dc, const Item *it, int x, int y, int s);
+static int draw_icon_file(HDC dc, const WCHAR *f, int x, int y, int s);
 static void paint_ext_icon(HDC dc, const WCHAR *path, int x, int y, int s, int u);
 static void cicons_flush(void);
 static void lay_apply(Lay *L, int W, int H);
@@ -3804,7 +3935,7 @@ static void do_layout(int W, int H) {
     else if (L->capkind == 0) { for (int i = 0; i < 3; i++) L->capbtn[i] = (RECT){ W - bw * (3 - i), 0, W - bw * (2 - i), ch - (g_maxed ? 0 : 1) }; }
     else { int g = px(6), d = L->capkind == 2 ? px(24) : px(22); for (int i = 0; i < 3; i++) L->capbtn[i] = (RECT){ W - px(10) - (d + g) * (3 - i) + g, ch / 2 - d / 2, W - px(10) - (d + g) * (3 - i) + g + d, ch / 2 + d / 2 }; }
     int rh = px(28); L->ribtabs = (RECT){ 0, y, W, y + rh }; int x = px(8);
-    for (int i = 0; i < 6; i++) { int w = tw_(RIB_TABS[i], S.font) + px(22); L->ribtab[i] = (RECT){ x, y + 2, x + w, y + rh }; x += w + px(2); }
+    for (int i = 0; i < RIB_N; i++) { int w = tw_(rib_name(i), S.font) + px(22); L->ribtab[i] = (RECT){ x, y + 2, x + w, y + rh }; x += w + px(2); }
     L->ribcol = (RECT){ W - px(30), y + 2, W - px(4), y + rh - 2}; y += rh;
     if (C.ribbon_open) { L->has_strip = 1; int sth = px(68) + lay_dh(L"strip"); if (sth < px(30)) sth = px(30); L->strip = (RECT){ 0, y, W, y + sth }; y += sth; }
     int th = st->layout == LAY_HEADER ? px(st->cap_h_fm) : px(st->tool_h); if (th < px(38)) th = px(38); th += lay_dh(L"navbar"); if (th < px(30)) th = px(30); L->navbar = (RECT){ 0, y, W, y + th }; y += th;
@@ -3862,9 +3993,10 @@ static void ensure_visible(int vi) {
 }
 /* ---- nav model with tree ---- */
 static SL g_tree_open;
+static int g_nav_cur_blk;
 static void nav_add(const WCHAR *label, const WCHAR *path, int root, int glyph, int sect, int depth, int exp) {
     if (S.nnav == S.ncap_nav) { S.ncap_nav = S.ncap_nav ? S.ncap_nav * 2 : 64; S.nav = (NavEnt *)realloc(S.nav, S.ncap_nav * sizeof(NavEnt)); }
-    NavEnt *e = &S.nav[S.nnav++]; scpy(e->label, MAX_PATH, label); scpy(e->path, MAX_PATH, path); e->root = root; e->glyph = glyph; e->sect = sect; e->depth = depth; e->exp = exp;
+    NavEnt *e = &S.nav[S.nnav++]; scpy(e->label, MAX_PATH, label); scpy(e->path, MAX_PATH, path); e->root = root; e->glyph = glyph; e->sect = sect; e->depth = depth; e->exp = exp; e->blk = g_nav_cur_blk;
 }
 static int cmp_wstr(const void *a, const void *b) { return lstrcmpiW(*(WCHAR *const *)a, *(WCHAR *const *)b); }
 static int g_nav_reveal;
@@ -3885,19 +4017,44 @@ static void nav_tree(const WCHAR *dir, int depth, int sect) {
     if (n) qsort(names, n, sizeof(WCHAR *), cmp_wstr);
     for (int i = 0; i < n; i++) { WCHAR p[MAX_PATH]; path_join(p, MAX_PATH, dir, names[i]); nav_folder(names[i], p, sect, depth); free(names[i]); } free(names);
 }
+/* ---- navigation pane blocks: order / hide / custom folders ---- */
+static const WCHAR *const NAV_DEF[7] = { L"apps", L"games", L"trash", L"quick", L"recent", L"fav", L"pc" };
+static WCHAR g_nav_keys[48][MAX_PATH]; static int g_nav_nk;
+static int nav_key_valid(const WCHAR *k) { for (int i = 0; i < 7; i++) if (!wcscmp(k, NAV_DEF[i])) return 1; return k[0] == '+' && k[1] && dir_exists(k + 1); }
+static void nav_order_full(void) {   /* g_nav_keys = saved order (valid keys), then any default block that is missing */
+    g_nav_nk = 0; for (int i = 0; i < C.nav_order.n && g_nav_nk < 48; i++) { const WCHAR *k = C.nav_order.v[i]; if (!nav_key_valid(k)) continue; int dup = 0; for (int j = 0; j < g_nav_nk; j++) if (!wcscmp(g_nav_keys[j], k)) dup = 1; if (!dup) scpy(g_nav_keys[g_nav_nk++], MAX_PATH, k); }
+    for (int i = 0; i < 7; i++) { int has = 0; for (int j = 0; j < g_nav_nk; j++) if (!wcscmp(g_nav_keys[j], NAV_DEF[i])) has = 1; if (!has && g_nav_nk < 48) scpy(g_nav_keys[g_nav_nk++], MAX_PATH, NAV_DEF[i]); }
+}
+static void nav_order_store(void) { sl_clear(&C.nav_order); for (int i = 0; i < g_nav_nk; i++) sl_add(&C.nav_order, g_nav_keys[i]); }
+static int nav_key_index(const WCHAR *k) { for (int i = 0; i < g_nav_nk; i++) if (!wcscmp(g_nav_keys[i], k)) return i; return -1; }
+static void nav_move_block(int from, int to) {   /* put block `from` at position `to` */
+    if (from < 0 || from >= g_nav_nk || to < 0 || to >= g_nav_nk || from == to) return; WCHAR tmp[MAX_PATH]; scpy(tmp, MAX_PATH, g_nav_keys[from]);
+    if (to < from) for (int i = from; i > to; i--) scpy(g_nav_keys[i], MAX_PATH, g_nav_keys[i - 1]); else for (int i = from; i < to; i++) scpy(g_nav_keys[i], MAX_PATH, g_nav_keys[i + 1]); scpy(g_nav_keys[to], MAX_PATH, tmp); nav_order_store(); cfg_save(); g_nav_dirty = 1;
+}
+static const WCHAR *nav_key_label(const WCHAR *k) {
+    static WCHAR b[MAX_PATH]; const Style *st = cur_style(); if (!wcscmp(k, L"apps")) return C.apps_title[0] ? C.apps_title : L"Computer"; if (!wcscmp(k, L"games")) return L"Games"; if (!wcscmp(k, L"trash")) return L"Recycle Bin";
+    if (!wcscmp(k, L"quick")) return st->sec[0]; if (!wcscmp(k, L"recent")) return st->sec[1]; if (!wcscmp(k, L"fav")) return st->sec[2]; if (!wcscmp(k, L"pc")) return st->sec[3]; if (k[0] == '+') { const WCHAR *bn = base_name(k + 1); scpy(b, MAX_PATH, *bn ? bn : k + 1); return b; } return k;
+}
+static void nav_block(const WCHAR *key, int blk) {
+    const Style *st = cur_style(); WCHAR h[MAX_PATH], p[MAX_PATH]; home_dir(h); g_nav_cur_blk = blk;
+    if (!wcscmp(key, L"quick")) { nav_add(st->sec[0], L"::quick", 1, 1, 0, 0, -1);
+        if (!S.nav_open[0]) { static const WCHAR *n[] = { L"Desktop", L"Downloads", L"Documents", L"Pictures", L"Music", L"Videos" }; for (int k = 0; k < 6; k++) { path_join(p, MAX_PATH, h, n[k]); if (dir_exists(p)) nav_folder(n[k], p, 0, 0); } } }
+    else if (!wcscmp(key, L"recent")) { nav_add(st->sec[1], L"::recent", 1, 2, 1, 0, -1);
+        if (!S.nav_open[1]) for (int k = 0; k < C.recent_folders.n && k < 8; k++) if (dir_exists(C.recent_folders.v[k])) { const WCHAR *b = base_name(C.recent_folders.v[k]); nav_add(*b ? b : C.recent_folders.v[k], C.recent_folders.v[k], 0, 0, 1, 0, -1); } }
+    else if (!wcscmp(key, L"fav")) { nav_add(st->sec[2], L"::fav", 1, 3, 2, 0, -1);
+        if (!S.nav_open[2]) for (int k = 0; k < C.favorites.n; k++) if (dir_exists(C.favorites.v[k])) { const WCHAR *b = base_name(C.favorites.v[k]); nav_folder(*b ? b : C.favorites.v[k], C.favorites.v[k], 2, 0); } }
+    else if (!wcscmp(key, L"pc")) { nav_add(st->sec[3], L"", 1, 4, 3, 0, -1);
+        if (!S.nav_open[3]) { DWORD mask = GetLogicalDrives();
+            for (int k = 0; k < 26; k++) if (mask & (1u << k)) { WCHAR root[4] = { (WCHAR)('A' + k), ':', '\\', 0 }, lab[40]; UINT ty = GetDriveTypeW(root); wfmt(lab, 40, L"%lc: (%ls)", root[0], ty == DRIVE_CDROM ? L"CD" : ty == DRIVE_REMOVABLE ? L"Removable" : ty == DRIVE_REMOTE ? L"Network" : L"Local Disk");
+                int open = C.show_tree && sl_find(&g_tree_open, root) >= 0; nav_add(lab, root, 0, 5, 3, 0, C.show_tree ? (open ? 1 : 0) : -1); if (open) nav_tree(root, 1, 3); } } }
+    else if (!wcscmp(key, L"apps")) nav_add(C.apps_title[0] ? C.apps_title : L"Computer", L"::apps", 1, 7, 4, 0, -1);
+    else if (!wcscmp(key, L"games")) nav_add(L"Games", L"::games", 1, 8, 6, 0, -1);
+    else if (!wcscmp(key, L"trash")) nav_add(L"Recycle Bin", L"::trash", 1, 6, 5, 0, -1);
+    else if (key[0] == '+') { const WCHAR *b = base_name(key + 1); nav_folder(*b ? b : key + 1, key + 1, 7, 0); }
+}
 static void nav_rebuild(void) {
-    const Style *st = cur_style(); WCHAR h[MAX_PATH], p[MAX_PATH]; home_dir(h); S.nnav = 0; g_nav_dirty = 0;
-    nav_add(st->sec[0], L"::quick", 1, 1, 0, 0, -1);
-    if (!S.nav_open[0]) { static const WCHAR *n[] = { L"Desktop", L"Downloads", L"Documents", L"Pictures", L"Music", L"Videos" }; for (int k = 0; k < 6; k++) { path_join(p, MAX_PATH, h, n[k]); if (dir_exists(p)) nav_folder(n[k], p, 0, 0); } }
-    nav_add(st->sec[1], L"::recent", 1, 2, 1, 0, -1);
-    if (!S.nav_open[1]) for (int k = 0; k < C.recent_folders.n && k < 8; k++) if (dir_exists(C.recent_folders.v[k])) { const WCHAR *b = base_name(C.recent_folders.v[k]); nav_add(*b ? b : C.recent_folders.v[k], C.recent_folders.v[k], 0, 0, 1, 0, -1); }
-    nav_add(st->sec[2], L"::fav", 1, 3, 2, 0, -1);
-    if (!S.nav_open[2]) for (int k = 0; k < C.favorites.n; k++) if (dir_exists(C.favorites.v[k])) { const WCHAR *b = base_name(C.favorites.v[k]); nav_folder(*b ? b : C.favorites.v[k], C.favorites.v[k], 2, 0); }
-    nav_add(st->sec[3], L"", 1, 4, 3, 0, -1);
-    if (!S.nav_open[3]) { DWORD mask = GetLogicalDrives();
-        for (int k = 0; k < 26; k++) if (mask & (1u << k)) { WCHAR root[4] = { (WCHAR)('A' + k), ':', '\\', 0 }, lab[40]; UINT ty = GetDriveTypeW(root); wfmt(lab, 40, L"%lc: (%ls)", root[0], ty == DRIVE_CDROM ? L"CD" : ty == DRIVE_REMOVABLE ? L"Removable" : ty == DRIVE_REMOTE ? L"Network" : L"Local Disk");
-            int open = C.show_tree && sl_find(&g_tree_open, root) >= 0; nav_add(lab, root, 0, 5, 3, 0, C.show_tree ? (open ? 1 : 0) : -1); if (open) nav_tree(root, 1, 3); } }
-    nav_add(C.apps_title[0] ? C.apps_title : L"Computer", L"::apps", 1, 7, 4, 0, -1); nav_add(L"Games", L"::games", 1, 8, 6, 0, -1); nav_add(L"Recycle Bin", L"::trash", 1, 6, 5, 0, -1);
+    const Style *st = cur_style(); S.nnav = 0; g_nav_dirty = 0; nav_order_full();
+    for (int i = 0; i < g_nav_nk; i++) { if (sl_find(&C.nav_hide, g_nav_keys[i]) >= 0) continue; nav_block(g_nav_keys[i], i); }
     S.nav_t = GetTickCount();
     if (g_nav_reveal) { g_nav_reveal = 0; Tab *t = curtab(); int best = -1; for (int i = 0; i < S.nnav; i++) if (!S.nav[i].root && wieq(S.nav[i].path, t->path)) { if (best < 0 || S.nav[i].sect == 3) best = i; }
         if (best >= 0) { int rh = px(st->nav_row), vh = LY.nav.bottom - LY.nav.top; int y0 = best * rh; if (vh > rh) { if (y0 < S.nav_scroll) S.nav_scroll = y0; else if (y0 + rh + px(8) > S.nav_scroll + vh) S.nav_scroll = y0 + rh + px(8) - vh; if (S.nav_scroll < 0) S.nav_scroll = 0; } } }
@@ -3907,6 +4064,7 @@ static void tree_reveal(const WCHAR *path) {
     while (p[0]) { if (sl_find(&g_tree_open, p) < 0) { sl_add(&g_tree_open, p); ch = 1; } WCHAR q[MAX_PATH]; parent_of(p, q); scpy(p, MAX_PATH, q); }
     if (C.show_tree) { g_nav_reveal = 1; g_nav_dirty = 1; } (void)ch;
 }
+static int g_navd_pend = -1, g_navd, g_navd_drop = -1, g_navd_after, g_navd_x, g_navd_y, g_nav_ctx = -1;
 static int nav_hit(int x, int y) { if (!in_rect(&LY.nav, x, y)) return -1; int rh = px(cur_style()->nav_row); int i = (y - LY.nav.top - px(4) + S.nav_scroll) / rh; return (i >= 0 && i < S.nnav) ? i : -1; }
 static int nav_arrow_hit(const NavEnt *e, int x) { int ix = LY.nav.left + px(4) + px(24) + e->depth * px(14); return abs(x - (ix - px(12))) <= px(9); }
 static void nav_toggle(int i) {
@@ -3924,6 +4082,9 @@ static void apply_fonts(void) {
 /* ---- icons: custom + folder colours ---- */
 typedef struct { WCHAR key[MAX_PATH]; HICON ic; HBITMAP bm; int w, h, tried; void *gp; } CIcon;
 static CIcon g_cicons[48]; static int g_cic_next;
+static const WCHAR *icon_map_find_in(const SL *l, const WCHAR *key) { int n = lstrlenW(key); for (int i = 0; i < l->n; i++) { const WCHAR *s = l->v[i]; const WCHAR *bar = wcsrchr(s, '|'); if (!bar) continue; if ((int)(bar - s) == n && !_wcsnicmp(s, key, n)) return bar + 1; } return NULL; }
+static const WCHAR *btn_icon_key(const WCHAR *k) { return icon_map_find_in(&C.btn_icons, k); }
+static const WCHAR *btn_icon_file(int id) { WCHAR k[16]; wfmt(k, 16, L"%d", id); return btn_icon_key(k); }
 static const WCHAR *icon_map_find(const WCHAR *key) { int l = lstrlenW(key); for (int i = 0; i < C.icon_map.n; i++) { const WCHAR *s = C.icon_map.v[i]; const WCHAR *bar = wcsrchr(s, '|'); if (!bar) continue; if ((int)(bar - s) == l && !_wcsnicmp(s, key, l)) return bar + 1; } return NULL; }
 static CIcon *cicon_load(const WCHAR *file) {
     for (int i = 0; i < 48; i++) if (g_cicons[i].tried && !wcscmp(g_cicons[i].key, file)) return &g_cicons[i];
@@ -3953,8 +4114,14 @@ static void pv_pick_icon(HDC dc, const RECT *body) {
     Item tmp; memset(&tmp, 0, sizeof tmp); scpy(tmp.path, MAX_PATH, g_pv.path); scpy(tmp.name, 256, base_name(g_pv.path)); tmp.dir = S.prev.dir; int bud = 0; int bw = body->right - body->left; int isz = px(96); if (isz > bw - px(20)) isz = bw - px(20); if (isz < px(32)) isz = px(32);
     int ix = body->left + (bw - isz) / 2, iy = body->top + px(18); WCHAR dr[4]; int drive = 0; if (g_pinfo.n && !wcscmp(g_pinfo.k[0], L"Name") && g_pv.path[1] == ':' && g_pv.path[2] == '\\' && !g_pv.path[3]) drive = 1; (void)dr;
     HRGN rg = CreateRectRgn(body->left, body->top, body->right, body->bottom); SelectClipRgn(dc, rg); DeleteObject(rg);
-    if (drive) paint_drive(dc, ix, iy, isz, mixc(p->dim, p->text, 0.35)); else if (!tmp.dir && !ext_in(tmp.path, L".exe.ico.lnk.scr.") ) { if (!draw_custom_icon2(dc, &tmp, ix, iy, isz)) paint_ext_icon(dc, tmp.path, ix, iy, isz, 0); }
-    else if (!tmp.dir) { HICON ic = icon_for(tmp.path, 1, 0); if (ic) DrawIconEx(dc, ix, iy, ic, isz, isz, 0, NULL, DI_NORMAL); } else draw_item_icon(dc, &tmp, ix, iy, isz, 0, &bud, 0);
+    if (drive) paint_drive(dc, ix, iy, isz, mixc(p->dim, p->text, 0.35));
+    else if (tmp.dir) draw_item_icon(dc, &tmp, ix, iy, isz, 0, &bud, 0);
+    else { WCHAR papp[MAX_PATH], apkic[MAX_PATH]; int done = 0, own = ext_in(tmp.path, L".exe.ico.lnk.scr.msi.msp.bat.cmd.com.");   /* programs show their own icon in every mode */
+        if (!own && draw_custom_icon2(dc, &tmp, ix, iy, isz)) done = 1;
+        if (!done && ext_in(tmp.path, L".apk.") && apk_icon_file(tmp.path, apkic) && draw_icon_file(dc, apkic, ix, iy, isz)) done = 1;
+        if (!done && !own && preview_app_for(tmp.path, papp)) { HICON ic = icon_for(papp, 1, 0); if (ic) { DrawIconEx(dc, ix, iy, ic, isz, isz, 0, NULL, DI_NORMAL); done = 1; } }
+        if (!done && !own) { paint_ext_icon(dc, tmp.path, ix, iy, isz, 0); done = 1; }
+        if (!done) { HICON ic = icon_for(tmp.path, 1, 0); if (ic) DrawIconEx(dc, ix, iy, ic, isz, isz, 0, NULL, DI_NORMAL); } }
     int y = iy + isz + px(14); SelectObject(dc, S.font_big); RECT nr = { body->left + px(10), y, body->right - px(10), y + px(44) }; textr(dc, tmp.name, &nr, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS, p->text); y += px(48); SelectObject(dc, S.font_small);
     for (int i = 1; i < g_pinfo.n; i++) { RECT kr = { body->left + px(12), y, body->left + px(92), y + px(30) }, vr = { body->left + px(96), y, body->right - px(10), y + px(30) }; textr(dc, g_pinfo.k[i], &kr, DT_SINGLELINE | DT_END_ELLIPSIS, p->dim);
         RECT mr = vr; DrawTextW(dc, g_pinfo.v[i], -1, &mr, DT_CALCRECT | DT_WORDBREAK); int hh = mr.bottom - mr.top; if (hh < px(16)) hh = px(16); vr.bottom = vr.top + hh; textr(dc, g_pinfo.v[i], &vr, DT_WORDBREAK | DT_END_ELLIPSIS, p->text); y += hh + px(8); if (y > body->bottom) break; }
@@ -3963,6 +4130,7 @@ static void pv_pick_icon(HDC dc, const RECT *body) {
 /* ---- draw helpers ---- */
 static void tb_glyph(HDC dc, int kind, const RECT *r, COLORREF c) {
     int cx = (r->left + r->right) / 2, cy = (r->top + r->bottom) / 2, s = (r->bottom - r->top) / 5; if (s < 3) s = 3;
+    if (C.btn_icons.n) { WCHAR kk[8]; wfmt(kk, 8, L"tb%d", kind); const WCHAR *uf = btn_icon_key(kk); if (uf) { int is = (r->bottom - r->top) * 7 / 10; if (is > px(28)) is = px(28); if (is < px(12)) is = px(12); if (draw_icon_file(dc, uf, cx - is / 2, cy - is / 2, is)) return; } }
     switch (kind) {
     case 0: linec(dc, cx + s, cy, cx - s, cy, c, 2); linec(dc, cx - s, cy, cx, cy - s, c, 2); linec(dc, cx - s, cy, cx, cy + s, c, 2); break;
     case 1: linec(dc, cx - s, cy, cx + s, cy, c, 2); linec(dc, cx + s, cy, cx, cy - s, c, 2); linec(dc, cx + s, cy, cx, cy + s, c, 2); break;
@@ -4035,6 +4203,7 @@ static int cmd_checked(int id) {
     switch (id) { case CMD_PREVIEW: return C.show_preview; case CMD_TREE: return C.show_tree; case CMD_CHECKS: return C.checkboxes; case CMD_HIDDEN: return C.show_hidden; case CMD_THUMBS: return C.thumbnails;
     case CMD_VDET: return view_mode() == 0; case CMD_VICON: return view_mode() == 1; case CMD_VTILE: return view_mode() == 2; case CMD_DARK: return C.style_dark; case CMD_DRAGDROP: return C.drag_drop; case CMD_COUNTS: return C.show_counts; } return 0;
 }
+static const WCHAR *rib_name(int i) { return i == 6 && C.apps_title[0] ? C.apps_title : RIB_TABS[i]; }
 static int rb_items(int tab, RBI *o) {
     static const RBI file[] = { { CMD_NEWTAB, L"New tab" }, { CMD_NEWFOLDER, L"New folder" }, { CMD_NEWFILE, L"New file" }, { CMD_CMD, L"Open CMD" }, { CMD_NEWWIN, L"Duplicate tab" }, { CMD_SETTINGS, L"Settings" }, { CMD_ABOUT, L"About" }, { CMD_EXIT, L"Exit" } };
     static const RBI home[] = { { CMD_CUT, L"Cut" }, { CMD_COPY, L"Copy" }, { CMD_PASTE, L"Paste" }, { CMD_DELETE, L"Delete" }, { CMD_RENAME, L"Rename" }, { CMD_OPEN, L"Open" }, { CMD_OPENWITH, L"Open with" }, { CMD_SELALL, L"Select all" }, { CMD_SELNONE, L"Select none" }, { CMD_INVERT, L"Invert" }, { CMD_PROPS, L"Properties" } };
@@ -4042,11 +4211,14 @@ static int rb_items(int tab, RBI *o) {
     static const RBI view[] = { { CMD_VDET, L"Details" }, { CMD_VICON, L"Icons" }, { CMD_VTILE, L"Tiles" }, { CMD_PREVIEW, L"Preview" }, { CMD_TREE, L"Tree" }, { CMD_CHECKS, L"Checkboxes" }, { CMD_HIDDEN, L"Hidden" }, { CMD_THUMBS, L"Thumbnails" }, { CMD_SORT_NAME + 0x4000, L"Sort by" }, { CMD_ZOOM_IN, L"Zoom +" }, { CMD_ZOOM_OUT, L"Zoom -" } };
     static const RBI style[] = { { CMD_STYLES, L"Styles" }, { CMD_OSNEXT, L"Next theme" }, { CMD_DARK, L"Dark mode" }, { CMD_ACCENT0 + 0x4000, L"Accent" }, { CMD_FOLDERCOLOR, L"Folder colour" }, { CMD_SETICON, L"Custom icon" }, { CMD_FONT_PLUS, L"Font +" }, { CMD_FONT_MINUS, L"Font -" } };
     static const RBI tools[] = { { CMD_CMD, L"Open CMD" }, { CMD_ADMIN, L"Run as admin" }, { CMD_AUTO_RUN, L"Run autostart" }, { CMD_SETTINGS, L"Settings" }, { CMD_BACKUP, L"Backup" }, { CMD_RESTORE_CFG, L"Restore" }, { CMD_REFRESH, L"Refresh" } };
-    const RBI *s; int n; switch (tab) { case 0: s = file; n = 8; break; case 1: s = home; n = 11; break; case 2: s = share; n = 8; break; case 3: s = view; n = 11; break; case 4: s = style; n = 8; break; default: s = tools; n = 7; }
+    static const RBI comp[] = { { CMD_APPS, L"Open" }, { CMD_APP_ADD, L"Add app" }, { CMD_APP_UP, L"Move up" }, { CMD_APP_DOWN, L"Move down" }, { CMD_APP_TOP, L"To top" }, { CMD_APP_REMOVE, L"Remove" }, { CMD_APP_RESET, L"Reset list" }, { CMD_SETTINGS, L"Settings" } };
+    static const RBI games[] = { { CMD_GAMES, L"Games" }, { CMD_GAME_ADD, L"Add game" }, { CMD_GAME_BACKUP, L"Backup New Save" }, { CMD_GAME_BACKUP_ALL, L"Backup all" }, { CMD_GAME_OPENGS, L"Open .gs" }, { CMD_GAME_RESTORE, L"Browse .gs" }, { CMD_GAME_ICON, L"Game icon" }, { CMD_GAME_ADDPATH, L"Save paths" }, { CMD_GAME_REMOVE, L"Remove" }, { CMD_GS_ASSOC, L".gs assoc." } };
+    const RBI *s; int n; switch (tab) { case 6: s = comp; n = 8; break; case 7: s = games; n = 10; break; case 0: s = file; n = 8; break; case 1: s = home; n = 11; break; case 2: s = share; n = 8; break; case 3: s = view; n = 11; break; case 4: s = style; n = 8; break; default: s = tools; n = 7; }
     for (int i = 0; i < n; i++) o[i] = s[i]; return n;
 }
 static void rb_glyph(HDC dc, int id, const RECT *r, COLORREF c) {
     int cx = (r->left + r->right) / 2, cy = (r->top + r->bottom) / 2, s = px(8); id &= 0x3FFF; RECT q;
+    if (C.btn_icons.n) { const WCHAR *uf = btn_icon_file(id); if (uf) { int is = px(24); if (is > r->bottom - r->top) is = r->bottom - r->top; if (draw_icon_file(dc, uf, cx - is / 2, cy - is / 2, is)) return; } }
     switch (id) {
     case CMD_NEWFOLDER: paint_folder(dc, cx - s - 2, cy - s - 2, s * 2 + 4, cur_style()->folder); linec(dc, cx + s, cy + 1, cx + s + 5, cy + 1, c, 2); linec(dc, cx + s + 2, cy - 2, cx + s + 2, cy + 4, c, 2); return;
     case CMD_NEWFILE: case CMD_NEWTAB: q = (RECT){ cx - s + 2, cy - s, cx + s - 2, cy + s }; framer(dc, &q, c); linec(dc, cx + s - 1, cy - s + 4, cx + s + 4, cy - s + 4, c, 2); linec(dc, cx + s + 1, cy - s + 1, cx + s + 1, cy - s + 7, c, 2); return;
@@ -4060,6 +4232,14 @@ static void rb_glyph(HDC dc, int id, const RECT *r, COLORREF c) {
     case CMD_COMPRESS_ZIP: case CMD_COMPRESS_7Z: case CMD_COMPRESS_TGZ: case CMD_COMPRESS_RAR: q = (RECT){ cx - s + 2, cy - s, cx + s - 2, cy + s }; framer(dc, &q, c); for (int i = 0; i < 4; i++) fill4(dc, cx - 2, cy - s + 1 + i * 4, cx + 2, cy - s + 3 + i * 4, i & 1 ? c : S.pal.accent); return;
     case CMD_EXTRACT_MENU: linec(dc, cx, cy - s, cx, cy + 3, c, 2); linec(dc, cx - 4, cy - 1, cx, cy + 4, c, 2); linec(dc, cx + 4, cy - 1, cx, cy + 4, c, 2); fill4(dc, cx - s, cy + s - 2, cx + s + 1, cy + s, c); return;
     case CMD_FOLDERCOLOR: paint_folder(dc, cx - s - 2, cy - s - 2, s * 2 + 4, 0x4D8DF2); return;
+    case CMD_APPS: case CMD_APP_ADD: case CMD_APP_RESET: q = (RECT){ cx - s, cy - s + 1, cx + s, cy + 3 }; framer(dc, &q, c); linec(dc, cx, cy + 3, cx, cy + s, c, 2); linec(dc, cx - 5, cy + s, cx + 5, cy + s, c, 2); if (id == CMD_APP_ADD) { linec(dc, cx - 3, cy - 3, cx + 3, cy - 3, c, 2); linec(dc, cx, cy - 6, cx, cy, c, 2); } return;
+    case CMD_APP_UP: linec(dc, cx, cy + s - 2, cx, cy - s + 2, c, 2); linec(dc, cx - 5, cy - 2, cx, cy - s + 2, c, 2); linec(dc, cx + 5, cy - 2, cx, cy - s + 2, c, 2); return;
+    case CMD_APP_DOWN: linec(dc, cx, cy - s + 2, cx, cy + s - 2, c, 2); linec(dc, cx - 5, cy + 2, cx, cy + s - 2, c, 2); linec(dc, cx + 5, cy + 2, cx, cy + s - 2, c, 2); return;
+    case CMD_APP_TOP: fill4(dc, cx - s, cy - s, cx + s + 1, cy - s + 2, c); linec(dc, cx, cy + s - 2, cx, cy - s + 4, c, 2); linec(dc, cx - 5, cy - 1, cx, cy - s + 4, c, 2); linec(dc, cx + 5, cy - 1, cx, cy - s + 4, c, 2); return;
+    case CMD_APP_REMOVE: case CMD_GAME_REMOVE: linec(dc, cx - s + 2, cy - s + 2, cx + s - 2, cy + s - 2, c, 2); linec(dc, cx + s - 2, cy - s + 2, cx - s + 2, cy + s - 2, c, 2); return;
+    case CMD_GAMES: case CMD_GAME_ADD: case CMD_GAME_ICON: case CMD_GAME_OPENGS: case CMD_GAME_RESTORE: case CMD_GAME_BACKUP: case CMD_GAME_BACKUP_ALL: case CMD_GAME_ADDPATH: case CMD_GS_ASSOC:
+        q = (RECT){ cx - s - 3, cy - 5, cx + s + 4, cy + 5 }; framer(dc, &q, c); linec(dc, cx - s + 1, cy, cx - s + 5, cy, c, 2); linec(dc, cx - s + 3, cy - 2, cx - s + 3, cy + 3, c, 2); fill4(dc, cx + 3, cy - 2, cx + 5, cy, c); fill4(dc, cx + 6, cy, cx + 8, cy + 2, c);
+        if (id == CMD_GAME_ADD || id == CMD_GAME_ADDPATH) { linec(dc, cx + s - 1, cy - s - 1, cx + s + 5, cy - s - 1, c, 2); linec(dc, cx + s + 2, cy - s - 4, cx + s + 2, cy - s + 2, c, 2); } return;
     case CMD_OPEN: case CMD_OPENWITH: q = (RECT){ cx - s, cy - s + 3, cx + s - 2, cy + s }; framer(dc, &q, c); linec(dc, cx, cy, cx + s, cy - s, c, 2); return;
     }
     WCHAR l[3] = { 0, 0, 0 }; RBI tmp[16]; (void)tmp; l[0] = id == CMD_SELALL ? 'A' : id == CMD_SELNONE ? 'N' : id == CMD_INVERT ? 'I' : id == CMD_RENAME ? 'R' : id == CMD_PROPS ? 'i' : id == CMD_ADMIN ? '!' : id == CMD_EXIT ? 'x' : id == CMD_ABOUT ? '?' : id == CMD_TREE ? 'T' :
@@ -4069,9 +4249,9 @@ static void rb_glyph(HDC dc, int id, const RECT *r, COLORREF c) {
 }
 static void draw_ribbon(HDC dc) {
     const Pal *p = &S.pal; const Style *st = cur_style(); int pill = st->round >= 9; RECT rt = LY.ribtabs; fillr(dc, &rt, lay_col(L"ribtabs", p->tool)); SelectObject(dc, S.font);
-    for (int i = 0; i < 6; i++) { RECT r = LY.ribtab[i]; int act = i == C.ribbon_tab && C.ribbon_open, hot = in_rect(&r, g_mx, g_my);
-        if (pill) { if (act) rrect(dc, &r, p->sel, p->sel, st->round > 12 ? (r.bottom - r.top) / 2 : st->round, 0); else if (hot) rrect(dc, &r, p->hover, p->hover, st->round > 12 ? (r.bottom - r.top) / 2 : st->round, 0); textr(dc, RIB_TABS[i], &r, TC, act ? p->sel_text : p->text); }
-        else { if (hot && !act) fillr(dc, &r, p->hover); if (act) { RECT t = r; fillr(dc, &t, p->tool); fill4(dc, r.left, r.bottom - 3, r.right, r.bottom, p->accent); } textr(dc, RIB_TABS[i], &r, TC, act ? p->text : p->dim); } }
+    for (int i = 0; i < RIB_N; i++) { RECT r = LY.ribtab[i]; int act = i == C.ribbon_tab && C.ribbon_open, hot = in_rect(&r, g_mx, g_my);
+        if (pill) { if (act) rrect(dc, &r, p->sel, p->sel, st->round > 12 ? (r.bottom - r.top) / 2 : st->round, 0); else if (hot) rrect(dc, &r, p->hover, p->hover, st->round > 12 ? (r.bottom - r.top) / 2 : st->round, 0); textr(dc, rib_name(i), &r, TC, act ? p->sel_text : p->text); }
+        else { if (hot && !act) fillr(dc, &r, p->hover); if (act) { RECT t = r; fillr(dc, &t, p->tool); fill4(dc, r.left, r.bottom - 3, r.right, r.bottom, p->accent); } textr(dc, rib_name(i), &r, TC, act ? p->text : p->dim); } }
     RECT cr = LY.ribcol; if (in_rect(&cr, g_mx, g_my)) rrect(dc, &cr, p->hover, p->hover, 3, 0); int cx = (cr.left + cr.right) / 2, cy = (cr.top + cr.bottom) / 2; if (C.ribbon_open) { linec(dc, cx - 4, cy + 2, cx, cy - 2, p->dim, 2); linec(dc, cx, cy - 2, cx + 5, cy + 2, p->dim, 2); } else { linec(dc, cx - 4, cy - 2, cx, cy + 2, p->dim, 2); linec(dc, cx, cy + 2, cx + 5, cy - 2, p->dim, 2); }
     if (!C.ribbon_open) fill4(dc, 0, rt.bottom - 1, rt.right, rt.bottom, p->line);
     g_nrb = 0; if (!LY.has_strip) return; RECT sr = LY.strip; fillr(dc, &sr, mixc(p->tool, p->bg, 0.5)); fill4(dc, 0, sr.top, sr.right, sr.top + 1, p->line); fill4(dc, 0, sr.bottom - 1, sr.right, sr.bottom, p->line);
@@ -4160,11 +4340,12 @@ static void draw_nav(HDC dc) {
         int cur = wieq(e->path, t->path) && (!e->root || t->path[0] == ':' || !t->path[0]); int hov = i == S.hover_nav; COLORREF fg = p->text;
         if (g_in.dragging && i == g_in.drop_nav) { rrect(dc, &r, p->accent, p->accent, rr, 0); fg = contrast(p->accent); } else if (cur) { rrect(dc, &r, p->nav_sel, p->nav_sel, rr, 0); fg = p->nav_sel_text; } else if (hov) rrect(dc, &r, p->hover, p->hover, rr, 0);
         int ix = r.left + px(e->root ? 6 : 24) + e->depth * px(14), isz = px(16), iy = y + (rh - isz) / 2;
-        if (e->root) { int open = !S.nav_open[e->sect], ax = r.left + px(8), ay = y + rh / 2; if (e->sect < 4) { if (open) { linec(dc, ax - 3, ay - 2, ax, ay + 2, p->dim, 1); linec(dc, ax, ay + 2, ax + 4, ay - 2, p->dim, 1); } else { linec(dc, ax - 2, ay - 3, ax + 2, ay, p->dim, 1); linec(dc, ax + 2, ay, ax - 2, ay + 4, p->dim, 1); } }
+        if (e->root) { int open = e->sect < 4 ? !S.nav_open[e->sect] : 1, ax = r.left + px(8), ay = y + rh / 2; if (e->sect < 4) { if (open) { linec(dc, ax - 3, ay - 2, ax, ay + 2, p->dim, 1); linec(dc, ax, ay + 2, ax + 4, ay - 2, p->dim, 1); } else { linec(dc, ax - 2, ay - 3, ax + 2, ay, p->dim, 1); linec(dc, ax + 2, ay, ax - 2, ay + 4, p->dim, 1); } }
             ix = r.left + px(20); SelectObject(dc, S.font_big); paint_glyph(dc, e->glyph, ix, iy, isz, cur ? fg : p->accent); }
         else { SelectObject(dc, S.font); if (e->exp >= 0) { int ax = ix - px(12), ay = y + rh / 2; if (e->exp) { linec(dc, ax - 3, ay - 2, ax, ay + 2, p->dim, 1); linec(dc, ax, ay + 2, ax + 4, ay - 2, p->dim, 1); } else { linec(dc, ax - 2, ay - 3, ax + 2, ay, p->dim, 1); linec(dc, ax + 2, ay, ax - 2, ay + 4, p->dim, 1); } }
             if (e->glyph == 5) paint_glyph(dc, 5, ix, iy, isz, fg); else paint_folder(dc, ix, iy, isz, folder_col(e->path, st->folder)); }
-        RECT tx = { ix + isz + px(8), y, r.right - px(4), y + rh }; textr(dc, e->label, &tx, TL, fg); }
+        RECT tx = { ix + isz + px(8), y, r.right - px(4), y + rh }; textr(dc, e->label, &tx, TL, fg);
+        if (g_navd && g_navd_drop >= 0 && e->blk == g_navd_drop) { int first = i == 0 || S.nav[i - 1].blk != e->blk, last = i == S.nnav - 1 || S.nav[i + 1].blk != e->blk; if (!g_navd_after && first) fill4(dc, nr.left + 2, y, nr.right - 3, y + 2, p->accent); if (g_navd_after && last) fill4(dc, nr.left + 2, y + rh - 2, nr.right - 3, y + rh, p->accent); } }
     SelectClipRgn(dc, NULL);
 }
 static void draw_preview(HDC dc) {
@@ -4286,11 +4467,16 @@ static CIcon *cicon_load2(const WCHAR *file) {
     if (!c->ic && G.ok) { void *img = NULL; if (!G.FromFile(file, &img) && img) { UINT w = 0, h = 0; G.W(img, &w); G.H(img, &h); if (w && h) { c->gp = img; c->w = (int)w; c->h = (int)h; } else G.DelI(img); } }
     return c;
 }
-static int draw_custom_icon2(HDC dc, const Item *it, int x, int y, int s) {
-    if (!C.icon_map.n) return 0; const WCHAR *f = icon_map_find(it->path); if (!f) { if (it->dir) f = icon_map_find(L"::folder"); else { const WCHAR *e = PathFindExtensionW(it->name); if (*e) f = icon_map_find(e); } }
-    if (!f || !path_exists(f)) return 0; CIcon *c = cicon_load2(f); if (c->ic) { DrawIconEx(dc, x, y, c->ic, s, s, 0, NULL, DI_NORMAL); return 1; }
+static int draw_icon_file(HDC dc, const WCHAR *f, int x, int y, int s) {
+    if (!f || !f[0] || !path_exists(f)) return 0; CIcon *c = cicon_load2(f); if (c->ic) { DrawIconEx(dc, x, y, c->ic, s, s, 0, NULL, DI_NORMAL); return 1; }
     if (c->gp) { double k = (double)s / (c->w > c->h ? c->w : c->h); int dw = (int)(c->w * k), dh = (int)(c->h * k); if (dw < 1) dw = 1; if (dh < 1) dh = 1; void *g = NULL; G.FromHDC(dc, &g); if (g) { G.Interp(g, 7); G.Draw(g, c->gp, x + (s - dw) / 2, y + (s - dh) / 2, dw, dh); G.DelG(g); return 1; } }
     return 0;
+}
+static int game_icon_of(int idx, WCHAR *out);
+static int draw_custom_icon2(HDC dc, const Item *it, int x, int y, int s) {
+    if (it->kind != 1 && !wcscmp(curtab()->path, L"::games")) { WCHAR gi[MAX_PATH]; if (game_icon_of(it->ord, gi) && draw_icon_file(dc, gi, x, y, s)) return 1; }
+    if (!C.icon_map.n) return 0; const WCHAR *f = icon_map_find(it->path); if (!f) { if (it->dir) f = icon_map_find(L"::folder"); else { const WCHAR *e = PathFindExtensionW(it->name); if (*e) f = icon_map_find(e); } }
+    return draw_icon_file(dc, f, x, y, s);
 }
 
 /* ========================================================================== */
@@ -4313,13 +4499,13 @@ static void run_autostart(int force) {
 }
 static void backup_settings(int restore) {
     WCHAR f[MAX_PATH] = L"winshell_fm_backup.json"; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"JSON (*.json)\0*.json\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.lpstrDefExt = L"json";
-    if (restore) { o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (!GetOpenFileNameW(&o)) return; } else { o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST; if (!GetSaveFileNameW(&o)) return; }
+    if (restore) { o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (!fm_getopen(&o)) return; } else { o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST; if (!fm_getsave(&o)) return; }
     if (restore) { if (!CopyFileW(f, CONFIG_PATH, FALSE)) { toast(L"Could not restore settings"); return; } cfg_load(); update_pal(); apply_fonts(); place_edits(); g_nav_dirty = 1; reload(0); toast(L"Settings restored"); }
     else { cfg_save(); toast(CopyFileW(CONFIG_PATH, f, FALSE) ? L"Settings saved" : L"Could not save settings"); }
 }
 static void add_autostart(void) {
     WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Programs (*.exe;*.bat;*.cmd;*.lnk)\0*.exe;*.bat;*.cmd;*.lnk\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (GetOpenFileNameW(&o) && sl_find(&C.autostart_apps, f) < 0) { sl_add(&C.autostart_apps, f); cfg_save(); toast(L"Added to autostart"); }
+    if (fm_getopen(&o) && sl_find(&C.autostart_apps, f) < 0) { sl_add(&C.autostart_apps, f); cfg_save(); toast(L"Added to autostart"); }
 }
 static void sort_by(const WCHAR *k) { if (!wcscmp(C.sort, k)) C.asc = !C.asc; else { scpy(C.sort, 16, k); C.asc = 1; } cfg_save(); rebuild_view(curtab()); redraw(); }
 static void set_pref_redraw(void) { cfg_save(); rebuild_view(curtab()); clamp_scroll(); place_edits(); redraw(); }
@@ -4354,7 +4540,7 @@ static void pick_icon(int scope) {   /* 0 this item, 1 all of this extension, 2 
     Tab *t = curtab(); Item *f = focus_item(t); if (!f && scope != 2) return; WCHAR key[MAX_PATH];
     if (scope == 2) lstrcpyW(key, L"::folder"); else if (scope == 1) { const WCHAR *e = PathFindExtensionW(f->name); if (!*e) { toast(L"This file has no extension"); return; } lstrcpyW(key, e); } else lstrcpyW(key, f->path);
     WCHAR file[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Icons and images\0*.ico;*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp;*.jfif;*.exe;*.dll\0All files\0*.*\0"; o.lpstrFile = file; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (!GetOpenFileNameW(&o)) return; set_map(&C.icon_map, key, file); cicons_flush(); toast(L"Custom icon set");
+    if (!fm_getopen(&o)) return; set_map(&C.icon_map, key, file); cicons_flush(); toast(L"Custom icon set");
 }
 static void clear_icon(void) {
     Tab *t = curtab(); Item *f = focus_item(t); if (!f) return; set_map(&C.icon_map, f->path, NULL); const WCHAR *e = PathFindExtensionW(f->name); if (*e) set_map(&C.icon_map, e, NULL); if (f->dir) set_map(&C.icon_map, L"::folder", NULL); cicons_flush(); toast(L"Custom icon removed");
@@ -4362,6 +4548,7 @@ static void clear_icon(void) {
 /* ---- Open with ---- */
 typedef struct { WCHAR name[64], path[MAX_PATH]; } OWApp;
 static OWApp g_ow[300]; static int g_now;
+static int lnk_target(const WCHAR *lnk, WCHAR *out);
 static void ow_add(const WCHAR *path, const WCHAR *name) {
     if (g_now >= 300 || !path[0] || !path_exists(path)) return; for (int i = 0; i < g_now; i++) if (wieq(g_ow[i].path, path)) return; OWApp *a = &g_ow[g_now++]; scpy(a->path, MAX_PATH, path);
     if (name && name[0]) scpy(a->name, 64, name); else { scpy(a->name, 64, base_name(path)); WCHAR *e = PathFindExtensionW(a->name); if (*e) *e = 0; if (a->name[0] >= 'a' && a->name[0] <= 'z') a->name[0] -= 32; }
@@ -4374,7 +4561,9 @@ static void ow_collect(void) {
     for (int r = 0; r < 2; r++) { HKEY k; if (RegOpenKeyExW(roots[r], L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths", 0, KEY_READ, &k) != ERROR_SUCCESS) continue;
         for (DWORD i = 0; i < 400; i++) { WCHAR sub[260]; DWORD sl = 260; if (RegEnumKeyExW(k, i, sub, &sl, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) break; HKEY k2; if (RegOpenKeyExW(k, sub, 0, KEY_READ, &k2) != ERROR_SUCCESS) continue;
             WCHAR v[MAX_PATH]; DWORD vl = sizeof v, ty; if (RegQueryValueExW(k2, NULL, NULL, &ty, (BYTE *)v, &vl) == ERROR_SUCCESS && (ty == REG_SZ || ty == REG_EXPAND_SZ)) { WCHAR x[MAX_PATH], q[MAX_PATH]; ExpandEnvironmentStringsW(v, x, MAX_PATH); scpy(q, MAX_PATH, x); PathUnquoteSpacesW(q); if (ext_in(q, L".exe.")) ow_add(q, NULL); } RegCloseKey(k2); } RegCloseKey(k); }
-    for (int i = 0; i < C.assoc.n; i++) { const WCHAR *b = wcschr(C.assoc.v[i], '|'); if (b) ow_add(b + 1, NULL); } qsort(g_ow, g_now, sizeof(OWApp), cmp_ow);
+    for (int i = 0; i < C.assoc.n; i++) { const WCHAR *b = wcschr(C.assoc.v[i], '|'); if (b) ow_add(b + 1, NULL); } /* programs from the Computer tab: shortcuts (.lnk) are resolved to the program they start, so the list shows the real app icon */
+    for (int i = 0; i < C.apps.n && i < 200; i++) { const WCHAR *ap = C.apps.v[i]; if (ext_in(ap, L".lnk.")) { WCHAR tg[MAX_PATH], nm[64]; if (lnk_target(ap, tg) && tg[0] && ext_in(tg, L".exe.bat.cmd.com.") ) { scpy(nm, 64, base_name(ap)); WCHAR *e = PathFindExtensionW(nm); if (*e) *e = 0; ow_add(tg, nm); } } else if (ext_in(ap, L".exe.")) ow_add(ap, NULL); }
+    qsort(g_ow, g_now, sizeof(OWApp), cmp_ow);
 }
 static void launch_with(const WCHAR *app, const WCHAR *file) { WCHAR a[MAX_PATH + 4], d[MAX_PATH]; wfmt(a, MAX_PATH + 4, L"\"%ls\"", file); parent_of(file, d); HINSTANCE r = ShellExecuteW(S.hwnd, L"open", app, a, d[0] ? d : NULL, SW_SHOWNORMAL); if ((INT_PTR)r <= 32) toast(L"Could not start that program"); else sl_front(&C.recent_files, file, 20); }
 static struct { WCHAR file[MAX_PATH], browse[MAX_PATH]; int always; } g_owd;
@@ -4384,7 +4573,7 @@ static void ow_build(Dlg *d) {
 }
 static int ow_act(Dlg *d, Row *r, int id) {
     (void)d; (void)r; if (id == 9001) return 1; if (id == 9002) { WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = d->hw; o.lpstrFilter = L"Programs (*.exe;*.bat;*.cmd)\0*.exe;*.bat;*.cmd\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-        if (GetOpenFileNameW(&o)) { scpy(g_owd.browse, MAX_PATH, f); return 1; } return 0; } return id >= 1000 ? 1 : 0;
+        if (fm_getopen(&o)) { scpy(g_owd.browse, MAX_PATH, f); return 1; } return 0; } return id >= 1000 ? 1 : 0;
 }
 static void open_with(Item *it) {
     if (!it || it->dir) return; ow_collect(); memset(&g_owd, 0, sizeof g_owd); scpy(g_owd.file, MAX_PATH, it->path); Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Open with"); d.w = px(520); d.h = px(560); d.build = ow_build; d.act = ow_act; dlg_foot(&d, 9002, L"Browse...", 0); dlg_foot(&d, 9001, L"Cancel", 0);
@@ -4436,6 +4625,93 @@ static void show_styles(void) {
     g_st_acc = 0; for (int i = 0; i < 8; i++) if (wieq(is_win10() ? C.accent : C.style_accent, FM_ACCENTS[i])) g_st_acc = i; g_st_theme = 1; for (int i = 0; i < (int)NTHEMES; i++) if (wieq(C.theme, FM_THEMES[i].name)) g_st_theme = i;
     Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Styles & Look"); d.w = px(720); d.h = px(660); d.build = styles_build; d.act = styles_act; dlg_foot(&d, 9, L"Done", 1); dlg_run(&d); style_changed();
 }
+/* ---- menu icons: app icons for "Open with" (shortcuts resolve to their program), glyphs for commands, user images ---- */
+static int menu_glyph_cmd(const PMItem *it) {
+    if (it->id) switch (it->id) { case CMD_OPEN: case CMD_OPEN_VIEWER: case CMD_OPENWITH: case CMD_CUT: case CMD_COPY: case CMD_PASTE: case CMD_DELETE: case CMD_DELETE_PERM: case CMD_COPYPATH: case CMD_RENAME: case CMD_PROPS: case CMD_NEWFOLDER: case CMD_NEWFILE: case CMD_CMD: case CMD_REFRESH: case CMD_SETTINGS: case CMD_STYLES:
+        case CMD_SHORTCUT: case CMD_SHORTCUT_HERE: case CMD_SELALL: case CMD_SELNONE: case CMD_INVERT: case CMD_ADMIN: case CMD_EXTRACT_MENU: case CMD_COMPRESS_ZIP: case CMD_COMPRESS_7Z: case CMD_COMPRESS_TGZ: case CMD_COMPRESS_RAR: case CMD_VDET: case CMD_VICON: case CMD_VTILE: case CMD_PREVIEW: case CMD_FOLDERCOLOR: case CMD_SETICON: case CMD_ABOUT: case CMD_GAME_ADD: case CMD_GAME_BACKUP: case CMD_GAME_BACKUP_ALL: case CMD_GAME_RESTORE: case CMD_APP_ADD: case CMD_APP_UP: case CMD_APP_DOWN: case CMD_APP_TOP: case CMD_APP_REMOVE: case CMD_GAME_REMOVE: return it->id; default: return 0; }
+    if (it->sub) { if (!wcscmp(it->text, L"Open with")) return CMD_OPENWITH; if (!wcscmp(it->text, L"Extract")) return CMD_EXTRACT_MENU; if (!wcscmp(it->text, L"Compress to")) return CMD_COMPRESS_ZIP; if (!wcscmp(it->text, L"Folder colour")) return CMD_FOLDERCOLOR; if (!wcscmp(it->text, L"Custom icon")) return CMD_SETICON; if (!wcscmp(it->text, L"New")) return CMD_NEWFOLDER; }
+    return 0;
+}
+static void menu_item_icon(HDC dc, const PMItem *it, const RECT *r, COLORREF fg) {
+    int s = px(16), x = r->left + px(5), y = (r->top + r->bottom - s) / 2;
+    if (it->id >= CMD_OW0 && it->id < CMD_OW0 + 300) { int i = it->id - CMD_OW0; if (i < g_now) { const WCHAR *ap = g_ow[i].path; HICON ic = icon_for(ap, 0, 0); if (ic) DrawIconEx(dc, x, y, ic, s, s, 0, NULL, DI_NORMAL); } return; }
+    if (it->id >= CMD_OW0 && it->id < CMD_OW0 + 300) return;
+    int g = menu_glyph_cmd(it); const WCHAR *uf = btn_icon_file(it->id ? it->id : g); if (uf && draw_icon_file(dc, uf, x, y, s)) return;
+    if (g) { RECT b = { r->left + px(3), y - px(2), r->left + px(23), y + s + px(2) }; rb_glyph(dc, g, &b, fg); }
+}
+/* ---- Settings: archives & games, context menu editor, navigation pane ---- */
+static void nav_cmd(int id);
+static void gs_associate(void);
+static void pick_tool(int rar) {
+    WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = rar ? L"WinRAR / rar.exe / UnRAR.exe\0WinRAR.exe;rar.exe;UnRAR.exe\0Programs\0*.exe\0" : L"7-Zip (7z.exe)\07z.exe;7za.exe;7zr.exe\0Programs\0*.exe\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; o.lpstrTitle = rar ? L"Choose WinRAR (WinRAR.exe / rar.exe)" : L"Choose 7-Zip (7z.exe)";
+    if (fm_getopen(&o)) { if (rar) scpy(C.tool_rar, MAX_PATH, f); else scpy(C.tool_7z, MAX_PATH, f); cfg_save(); }
+}
+static void assoc_prev_add(void) {
+    WCHAR ext[32] = L""; if (!fm_input(L"Preview app", L"File extension to associate (for example .rar):", ext, 32) || !ext[0]) return; WCHAR e2[40]; if (ext[0] != '.') wfmt(e2, 40, L".%ls", ext); else scpy(e2, 40, ext); CharLowerW(e2);
+    WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Programs\0*.exe\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; o.lpstrTitle = L"Choose the app that previews these files";
+    if (!fm_getopen(&o)) return; for (int i = 0; i < C.assoc_prev.n; i++) { const WCHAR *b = wcschr(C.assoc_prev.v[i], '|'); if (b && (int)(b - C.assoc_prev.v[i]) == lstrlenW(e2) && !_wcsnicmp(C.assoc_prev.v[i], e2, lstrlenW(e2))) { sl_del(&C.assoc_prev, i); break; } }
+    WCHAR *s = (WCHAR *)malloc((lstrlenW(e2) + lstrlenW(f) + 3) * sizeof(WCHAR)); wsprintfW(s, L"%ls|%ls", e2, f); sl_add(&C.assoc_prev, s); free(s);
+    if (ext_in(e2, L".zip.rar.7z.tar.gz.bz2.xz.cab.iso.tgz.lzh.arj.wim.")) { if (tool_is_rar(f)) scpy(C.tool_rar, MAX_PATH, f); else scpy(C.tool_7z, MAX_PATH, f); }   /* the archive tool also lists/extracts */
+    cfg_save(); preview_update();
+}
+static void arc_tab_build(Dlg *d) {
+    WCHAR t[MAX_PATH + 40], p[MAX_PATH]; dlg_head(d, L"Archive programs");
+    if (find_7z(p)) wfmt(t, MAX_PATH + 40, L"installed - %ls", p); else scpy(t, MAX_PATH + 40, L"not installed"); dlg_kv(d, L"7-Zip", t);
+    if (find_rar(p)) wfmt(t, MAX_PATH + 40, L"installed - %ls", p); else scpy(t, MAX_PATH + 40, L"not installed"); dlg_kv(d, L"WinRAR", t);
+    dlg_btn(d, 140, L"Choose the 7-Zip exe (7z.exe)..."); dlg_btn(d, 141, L"Choose the WinRAR exe (WinRAR.exe / rar.exe)..."); dlg_btn(d, 142, L"Forget the chosen exe files (detect again)");
+    dlg_check(d, 143, L"Show the extract / compress windows (choose files, folder, format - like WinRAR)", &C.arc_dialogs);
+    dlg_head(d, L"Preview app per extension"); dlg_note(d, L"Associate a program with an extension so the preview panel can use it (for archives, the chosen 7-Zip / WinRAR lists the contents). Archives open in thumbnail mode.");
+    dlg_btn(d, 144, L"Associate an app with an extension..."); for (int i = 0; i < C.assoc_prev.n && i < 40; i++) dlg_item(d, 5000 + i, C.assoc_prev.v[i], L"Click to remove", 0);
+    dlg_head(d, L"Games (.gs files)"); dlg_check(d, 145, L"Ask for confirmation before Restore Save replaces files", &C.gs_confirm);
+    wfmt(t, MAX_PATH + 40, L"Default folder for .gs files:  %ls", C.gs_dir[0] ? C.gs_dir : L"D:\\Games\\Backups\\"); dlg_btn(d, 146, t); dlg_btn(d, 147, L"Open .gs files with Files (Windows / Wine association)");
+}
+static int arc_tab_act(int id) {
+    if (id == 140) { pick_tool(0); return 1; } if (id == 141) { pick_tool(1); return 1; } if (id == 142) { C.tool_7z[0] = C.tool_rar[0] = 0; cfg_save(); return 1; } if (id == 143 || id == 145) { cfg_save(); return 1; }
+    if (id == 144) { assoc_prev_add(); return 1; } if (id >= 5000 && id < 5040) { if (id - 5000 < C.assoc_prev.n) sl_del(&C.assoc_prev, id - 5000); cfg_save(); return 1; }
+    if (id == 146) { WCHAR f[MAX_PATH]; if (fm_shell_pick(g_dlg_top ? g_dlg_top : S.hwnd, L"Default folder for .gs files", f, 1)) { scpy(C.gs_dir, MAX_PATH, f); cfg_save(); } return 1; } if (id == 147) { gs_associate(); return 1; } return 0;
+}
+static const struct { int id; const WCHAR *sub, *label; } CTX_EL[] = {
+    { CMD_OPEN, NULL, L"Open" }, { CMD_OPEN_VIEWER, NULL, L"Open in Viewer" }, { 0, L"Open with", L"Open with" }, { CMD_ADMIN, NULL, L"Run as administrator" }, { 0, L"Extract", L"Extract" }, { 0, L"Compress to", L"Compress to" }, { CMD_CUT, NULL, L"Cut" }, { CMD_COPY, NULL, L"Copy" }, { CMD_COPYPATH, NULL, L"Copy path" },
+    { CMD_RENAME, NULL, L"Rename" }, { CMD_DELETE, NULL, L"Delete" }, { CMD_DELETE_PERM, NULL, L"Delete permanently" }, { CMD_PIN, NULL, L"Pin to top" }, { CMD_FAVTOGGLE, NULL, L"Add to / remove from Favorites" }, { 0, L"Folder colour", L"Folder colour" }, { 0, L"Custom icon", L"Custom icon" },
+    { CMD_SHORTCUT, NULL, L"Create shortcut on Desktop" }, { CMD_SHORTCUT_HERE, NULL, L"Create shortcut here" }, { CMD_PROPS, NULL, L"Properties" } };
+#define NCTX ((int)(sizeof CTX_EL / sizeof CTX_EL[0]))
+static void ctx_key(const PMItem *it, WCHAR *k) { k[0] = 0; if (it->flags & PMF_SEP) return; if (it->id) wfmt(k, 60, L"c%d", it->id); else if (it->sub) wfmt(k, 60, L"s:%ls", it->text); }
+static void ctx_el_key(int i, WCHAR *k) { if (CTX_EL[i].id) wfmt(k, 60, L"c%d", CTX_EL[i].id); else wfmt(k, 60, L"s:%ls", CTX_EL[i].sub); }
+static void ctx_order_full(WCHAR keys[][60]) {   /* saved order first, then the rest in the built-in order */
+    int n = 0; for (int i = 0; i < C.ctx_order.n && n < NCTX; i++) { int ok = 0; for (int e = 0; e < NCTX; e++) { WCHAR k[60]; ctx_el_key(e, k); if (!wcscmp(k, C.ctx_order.v[i])) ok = 1; } int dup = 0; for (int j = 0; j < n; j++) if (!wcscmp(keys[j], C.ctx_order.v[i])) dup = 1; if (ok && !dup) scpy(keys[n++], 60, C.ctx_order.v[i]); }
+    for (int e = 0; e < NCTX; e++) { WCHAR k[60]; ctx_el_key(e, k); int has = 0; for (int j = 0; j < n; j++) if (!wcscmp(keys[j], k)) has = 1; if (!has) scpy(keys[n++], 60, k); }
+}
+static const WCHAR *ctx_label_of(const WCHAR *k) { for (int e = 0; e < NCTX; e++) { WCHAR kk[60]; ctx_el_key(e, kk); if (!wcscmp(kk, k)) return CTX_EL[e].label; } return k; }
+static void ctx_apply(PMenu *m) {   /* hide switched-off elements, reorder, tidy separators */
+    if (!C.ctx_off.n && !C.ctx_order.n) return; int n = m->n; PMItem *src = m->it; int *grp = (int *)calloc(n + 1, sizeof(int)); WCHAR (*ks)[60] = (WCHAR (*)[60])calloc(n + 1, 60 * sizeof(WCHAR)); int g = 0;
+    for (int i = 0; i < n; i++) { if (src[i].flags & PMF_SEP) g++; grp[i] = g; ctx_key(&src[i], ks[i]); }
+    int *used = (int *)calloc(n + 1, sizeof(int)); int *ord = (int *)malloc((n + 1) * sizeof(int)); int no = 0;
+    for (int i = 0; i < n; i++) if (ks[i][0] && sl_find(&C.ctx_off, ks[i]) >= 0) used[i] = 2;   /* removed */
+    if (C.ctx_order.n) { WCHAR keys[40][60]; ctx_order_full(keys); for (int k = 0; k < NCTX; k++) for (int i = 0; i < n; i++) if (!used[i] && !wcscmp(ks[i], keys[k])) { used[i] = 1; ord[no++] = i; break; } }
+    for (int i = 0; i < n; i++) if (!used[i] && !(src[i].flags & PMF_SEP)) { used[i] = 1; ord[no++] = i; }
+    PMenu *o = pm_new(); int lastg = -1; for (int k = 0; k < no; k++) { int i = ord[k]; if (lastg >= 0 && grp[i] != lastg && !C.ctx_order.n) {} if (lastg >= 0 && grp[i] != lastg) pm_sep(o); lastg = grp[i]; PMItem *d = pm_push(o); *d = src[i]; src[i].sub = NULL; }
+    for (int i = 0; i < n; i++) if (used[i] == 2 && src[i].sub) pm_free(src[i].sub);
+    while (o->n && (o->it[o->n - 1].flags & PMF_SEP)) o->n--;
+    for (int i = 0; i < n; i++) if (src[i].sub && used[i] == 1) {} free(src); m->it = o->it; m->n = o->n; m->cap = o->cap; free(o); free(grp); free(ks); free(used); free(ord);
+}
+static void menus_tab_build(Dlg *d) {
+    dlg_head(d, L"Context menu (right-click on a file or folder)"); dlg_check(d, 150, L"Show an icon next to every command", &C.menu_icons); dlg_note(d, L"Click an element to switch it on or off. Use the order list below to rearrange.");
+    WCHAR keys[40][60]; ctx_order_full(keys);
+    for (int i = 0; i < NCTX; i++) { WCHAR lab[120]; int off = sl_find(&C.ctx_off, keys[i]) >= 0; wfmt(lab, 120, L"%ls", ctx_label_of(keys[i])); dlg_item(d, 6000 + i, lab, off ? L"OFF - click to show" : L"ON - click to hide", 0); }
+    dlg_head(d, L"Order (click to move up)"); for (int i = 0; i < NCTX; i++) dlg_item(d, 6100 + i, ctx_label_of(keys[i]), i ? L"Click: move up" : L"top", 0);
+    dlg_btn(d, 151, L"Reset the context menu");
+    dlg_head(d, L"Navigation pane"); dlg_note(d, L"Right-click or drag items in the pane itself to rearrange; here you can show or hide sections.");
+    nav_order_full(); for (int i = 0; i < g_nav_nk && i < 40; i++) { int hid = sl_find(&C.nav_hide, g_nav_keys[i]) >= 0; dlg_item(d, 6200 + i, nav_key_label(g_nav_keys[i]), hid ? L"HIDDEN - click to show" : L"Shown - click to hide", 0); }
+    dlg_btn(d, 152, L"Add a folder to the navigation pane..."); dlg_btn(d, 153, L"Reset the navigation pane");
+}
+static int menus_tab_act(int id) {
+    WCHAR keys[40][60]; if (id == 150) { cfg_save(); return 1; }
+    if (id >= 6000 && id < 6000 + NCTX) { ctx_order_full(keys); int i = id - 6000; int k = sl_find(&C.ctx_off, keys[i]); if (k >= 0) sl_del(&C.ctx_off, k); else sl_add(&C.ctx_off, keys[i]); cfg_save(); return 1; }
+    if (id >= 6100 && id < 6100 + NCTX) { ctx_order_full(keys); int i = id - 6100; if (i > 0) { WCHAR t[60]; scpy(t, 60, keys[i]); scpy(keys[i], 60, keys[i - 1]); scpy(keys[i - 1], 60, t); } sl_clear(&C.ctx_order); for (int k = 0; k < NCTX; k++) sl_add(&C.ctx_order, keys[k]); cfg_save(); return 1; }
+    if (id == 151) { sl_clear(&C.ctx_off); sl_clear(&C.ctx_order); cfg_save(); return 1; }
+    if (id >= 6200 && id < 6240) { nav_order_full(); int i = id - 6200; if (i < g_nav_nk) { int k = sl_find(&C.nav_hide, g_nav_keys[i]); if (k >= 0) sl_del(&C.nav_hide, k); else sl_add(&C.nav_hide, g_nav_keys[i]); } cfg_save(); g_nav_dirty = 1; return 1; }
+    if (id == 152) { g_nav_ctx = -1; nav_cmd(CMD_NAV_ADD); return 1; } if (id == 153) { nav_cmd(CMD_NAV_RESET); return 1; } return 0;
+}
 /* ---- Settings dialog ---- */
 static struct { int view, sortk, dirs, scale, login, theme, apps_name; } ST;
 static const WCHAR *const SZ_NAMES[4] = { L"Min", L"Mid", L"Large", L"Full screen" };
@@ -4447,26 +4723,31 @@ static void settings_commit(void) {
 static void settings_build(Dlg *d) {
     static const WCHAR *const vw[3] = { L"Details", L"Icons", L"Tiles" }, *const sk[4] = { L"Name", L"Date modified", L"Type", L"Size" }, *const dd[3] = { L"Folders first", L"Folders last", L"Mixed" }, *const vm[3] = { L"In the preview panel (paused)", L"Open full screen", L"Do not preview (play externally)" };
     switch (d->tab) {
-    case 0: dlg_head(d, L"General"); dlg_check(d, 1, L"Restore tabs on start", &C.restore_session); dlg_check(d, 2, L"Show hidden files", &C.show_hidden); dlg_check(d, 3, L"Show folder / file counts and total size in the status bar", &C.show_counts);
+    case 0: dlg_head(d, L"General"); dlg_check(d, 1, L"Restore tabs on start", &C.restore_session); dlg_check(d, 2, L"Show hidden files", &C.show_hidden);
         dlg_check(d, 4, L"Show \"Run as administrator\" in the context menu", &C.admin_menu); dlg_check(d, 5, L"Start with Windows (Run key)", &ST.login); dlg_check(d, 6, L"Keep the command strip (ribbon) open", &C.ribbon_open);
         dlg_head(d, L"Safety"); dlg_check(d, 7, L"Ask for confirmation before copy / move / delete and when a preview cannot load", &C.confirm_ops); dlg_check(d, 8, L"Delete moves files to the Recycle Bin (Shift+Delete deletes for good)", &C.recycle); dlg_btn(d, 9, L"Empty the Recycle Bin...");
         dlg_head(d, L"Mouse"); dlg_check(d, 10, L"Double-click on empty space goes up one folder", &C.dbl_up); dlg_spin(d, 11, L"Blank area for drag-select (below / beside items)", &C.drag_margin, 0, 200, 8, L"px"); break;
     case 1: dlg_head(d, L"Appearance"); dlg_btn(d, 20, L"Choose look (Styles dialog)..."); dlg_check(d, 21, L"Dark variant", &C.style_dark); dlg_check(d, 22, L"Use the look's own fonts", &C.style_fonts); dlg_spin(d, 23, L"Interface zoom", &ST.scale, 60, 250, 10, L"%"); dlg_spin(d, 24, L"Font size", &C.font_size, 9, 28, 1, L"pt");
-        dlg_spin(d, 25, L"Icon size (icons view)", &C.icon_size, 32, 160, 16, L"px"); dlg_btn(d, 26, L"Document font..."); dlg_btn(d, 27, L"Add a font file for documents..."); dlg_check(d, 28, L"Built-in icon for every file extension (off = system icons)", &C.ext_icons); dlg_check(d, 29, L"Tile layout for This PC / devices (matches the look)", &C.pc_tiles);
+        dlg_spin(d, 25, L"Icon size (icons view)", &C.icon_size, 32, 160, 16, L"px"); dlg_btn(d, 26, L"Document font..."); dlg_btn(d, 27, L"Add a font file for documents...");
         dlg_head(d, L"Layout"); dlg_btn(d, 30, L"Open the layout editor (move / resize / recolour elements, save your own theme)..."); dlg_check(d, 31, L"Navigation pane on the right side", &C.nav_right);
         { static const WCHAR *const an[8] = { L"Computer", L"Programs", L"Apps", L"My PC", L"Applications", L"Wine apps", L"Winlator", L"Launcher" }; dlg_choice(d, 32, L"Name of the apps tab in the side pane", &ST.apps_name, an, 8); } dlg_check(d, 33, L"Hide Windows/Wine system tools in the apps tab", &C.hide_apps_sys); break;
-    case 2: dlg_head(d, L"View & files"); dlg_choice(d, 40, L"Default view", &ST.view, vw, 3); dlg_choice(d, 41, L"Sort by", &ST.sortk, sk, 4); dlg_check(d, 42, L"Ascending order", &C.asc); dlg_choice(d, 43, L"Folders", &ST.dirs, dd, 3); dlg_check(d, 44, L"Tree view in the navigation pane", &C.show_tree);
-        dlg_check(d, 45, L"Selection tick boxes (hover tick in list, corner tick in grid)", &C.checkboxes); dlg_head(d, L"Thumbnails"); dlg_check(d, 46, L"Show thumbnails", &C.thumbnails); dlg_check(d, 47, L"Photos (jpg / png)", &C.thumb_img); dlg_check(d, 48, L"Video (play badge)", &C.thumb_vid); dlg_check(d, 49, L"Graphics (ico / bmp / gif / webp)", &C.thumb_gfx);
-        dlg_head(d, L"Mouse"); dlg_check(d, 50, L"Drag files to move (hold Ctrl to copy)", &C.drag_drop); dlg_check(d, 51, L"Rubber-band (drag box) selection", &C.rubber); break;
-    case 3: dlg_head(d, L"Preview panel"); dlg_check(d, 60, L"Show preview panel", &C.show_preview); dlg_choice(d, 61, L"Video / audio", &C.video_mode, vm, 3); dlg_spin(d, 70, L"Ask before previewing files larger than", &C.pv_limit_mb, 1, 500, 5, L"MB"); dlg_btn(d, 71, L"Choose the external video player...");
+    case 2: dlg_head(d, L"View & files"); dlg_choice(d, 40, L"Default view", &ST.view, vw, 3); dlg_choice(d, 41, L"Sort by", &ST.sortk, sk, 4); dlg_check(d, 42, L"Ascending order", &C.asc); dlg_choice(d, 43, L"Folders", &ST.dirs, dd, 3);
+        dlg_check(d, 45, L"Selection tick boxes (hover tick in list, corner tick in grid)", &C.checkboxes); dlg_head(d, L"Mouse"); dlg_check(d, 50, L"Drag files to move (hold Ctrl to copy)", &C.drag_drop); dlg_check(d, 51, L"Rubber-band (drag box) selection", &C.rubber); break;
+    case 3: dlg_head(d, L"Preview panel"); dlg_note(d, L"Turn the preview panel itself on or off under Performance."); dlg_choice(d, 61, L"Video / audio", &C.video_mode, vm, 3); dlg_btn(d, 71, L"Choose the external video player...");
         dlg_head(d, L"Panel size per file type (drag the divider to fine-tune)"); dlg_choice(d, 62, L"Text", &C.pvsz0, SZ_NAMES, 4); dlg_choice(d, 63, L"Images", &C.pvsz1, SZ_NAMES, 4); dlg_choice(d, 64, L"Video / audio", &C.pvsz2, SZ_NAMES, 4); dlg_choice(d, 65, L"PDF", &C.pvsz3, SZ_NAMES, 4);
         dlg_choice(d, 66, L"Word", &C.pvsz4, SZ_NAMES, 4); dlg_choice(d, 67, L"Excel", &C.pvsz5, SZ_NAMES, 4); dlg_choice(d, 68, L"PowerPoint", &C.pvsz6, SZ_NAMES, 4); dlg_choice(d, 69, L"Archives", &C.pvsz7, SZ_NAMES, 4); break;
-    case 4: dlg_head(d, L"Search"); dlg_check(d, 80, L"Search inside subfolders", &C.search_subfolders); dlg_spin(d, 81, L"Maximum results", &C.search_limit, 100, 20000, 100, NULL); dlg_btn(d, 82, L"Clear search history"); dlg_btn(d, 83, L"Clear pinned searches"); dlg_btn(d, 84, L"Clear extension filter"); break;
+    case 4: dlg_head(d, L"Search"); dlg_note(d, L"Searching inside subfolders and the result limit are under Performance."); dlg_btn(d, 82, L"Clear search history"); dlg_btn(d, 83, L"Clear pinned searches"); dlg_btn(d, 84, L"Clear extension filter"); break;
     case 5: dlg_head(d, L"Autostart - apps opened when Files starts"); dlg_check(d, 100, L"Enable autostart", &C.autostart_enabled); dlg_btn(d, 101, L"Add program or file..."); dlg_btn(d, 102, L"Run them now");
         for (int i = 0; i < C.autostart_apps.n && i < 40; i++) dlg_item(d, 1000 + i, base_name(C.autostart_apps.v[i]), C.autostart_apps.v[i], 0); if (C.autostart_apps.n) dlg_note(d, L"Click an entry to remove it."); break;
     case 6: dlg_head(d, L"Folder colours"); for (int i = 0; i < C.folder_colors.n && i < 60; i++) dlg_item(d, 2000 + i, base_name(C.folder_colors.v[i]), C.folder_colors.v[i], 0);
         dlg_head(d, L"Custom icons"); for (int i = 0; i < C.icon_map.n && i < 60; i++) dlg_item(d, 3000 + i, C.icon_map.v[i], L"Click to remove", 0); dlg_head(d, L"\"Open with\" associations"); for (int i = 0; i < C.assoc.n && i < 60; i++) dlg_item(d, 4000 + i, C.assoc.v[i], L"Click to remove", 0);
         dlg_note(d, L"Use the context menu (Folder colour, Custom icon) to add entries."); break;
+    case 7: arc_tab_build(d); break;
+    case 8: dlg_head(d, L"Performance - features that can slow the app (all OFF by default)"); dlg_note(d, L"Turn on only what you need. Each one makes folders open slower on weak devices.");
+        dlg_head(d, L"Preview and thumbnails"); dlg_check(d, 60, L"Show preview panel", &C.show_preview); dlg_spin(d, 70, L"Ask before previewing files larger than", &C.pv_limit_mb, 1, 500, 5, L"MB"); dlg_check(d, 85, L"Archives: list the contents in the preview panel (off = thumbnail with the app icon)", &C.arc_list); dlg_check(d, 46, L"Show thumbnails", &C.thumbnails); dlg_check(d, 47, L"  Photos (jpg / png)", &C.thumb_img); dlg_check(d, 48, L"  Video (play badge)", &C.thumb_vid); dlg_check(d, 49, L"  Graphics (ico / bmp / gif / webp)", &C.thumb_gfx);
+        dlg_head(d, L"Folder contents"); dlg_check(d, 3, L"Folder / file counts and total size in the status bar", &C.show_counts); dlg_check(d, 44, L"Tree view in the navigation pane", &C.show_tree); dlg_check(d, 28, L"Built-in icon for every file extension (off = system icons)", &C.ext_icons); dlg_check(d, 29, L"Tile layout for This PC / devices", &C.pc_tiles);
+        dlg_head(d, L"Search"); dlg_check(d, 80, L"Search inside subfolders", &C.search_subfolders); dlg_spin(d, 81, L"Maximum results", &C.search_limit, 100, 20000, 100, NULL); break;
+    case 9: menus_tab_build(d); break;
     default: dlg_head(d, L"Backup"); dlg_btn(d, 123, L"Full backup: settings + custom icons + fonts + desktop shortcuts..."); dlg_btn(d, 124, L"Full restore (adds shortcuts back to the Wine desktop and the Computer tab)..."); dlg_btn(d, 120, L"Back up settings only..."); dlg_btn(d, 121, L"Restore settings only..."); dlg_head(d, L"About"); dlg_btn(d, 122, L"About Files(Winlator/Wine)..."); break;
     }
 }
@@ -4477,13 +4758,14 @@ static int settings_act(Dlg *d, Row *r, int id) {
     else if (id >= 3000 && id < 3100) { if (id - 3000 < C.icon_map.n) sl_del(&C.icon_map, id - 3000); cicons_flush(); } else if (id >= 4000 && id < 4100) { if (id - 4000 < C.assoc.n) sl_del(&C.assoc, id - 4000); }
     else if (id == 123) { backup_full(0); return 0; } else if (id == 124) { backup_full(1); return 0; } else if (id == 9) { do_empty_trash(); return 0; } else if (id == 30) { PostMessageW(S.hwnd, WM_COMMAND, MAKEWPARAM(CMD_LAYOUT_EDIT, 0), 0); return 1; } else if (id == 71) { choose_video_player(); return 0; }
     else if (id == 120) { backup_settings(0); return 0; } else if (id == 121) { backup_settings(1); return 0; } else if (id == 122) { show_about(); return 0; } else if (id == 999) return 1;
+    if (arc_tab_act(id)) return 0; if (menus_tab_act(id)) return 0;
     if (id == 31) { lay_commit(); } if (id == 32) { static const WCHAR *an[8] = { L"Computer", L"Programs", L"Apps", L"My PC", L"Applications", L"Wine apps", L"Winlator", L"Launcher" }; scpy(C.apps_title, 32, an[ST.apps_name]); g_nav_dirty = 1; set_title(); }
     settings_commit(); return 0;
 }
 static void show_settings(void) {
     ST.view = !wcscmp(C.view, L"icons") ? 1 : !wcscmp(C.view, L"tiles") ? 2 : 0; ST.sortk = !wcscmp(C.sort, L"date") ? 1 : !wcscmp(C.sort, L"type") ? 2 : !wcscmp(C.sort, L"size") ? 3 : 0; ST.dirs = !wcscmp(C.sort_dirs, L"last") ? 1 : !wcscmp(C.sort_dirs, L"mixed") ? 2 : 0; ST.scale = (int)(C.scale * 100 + 0.5); ST.login = run_at_login_enabled(); ST.apps_name = 0; { static const WCHAR *an[8] = { L"Computer", L"Programs", L"Apps", L"My PC", L"Applications", L"Wine apps", L"Winlator", L"Launcher" }; for (int i = 0; i < 8; i++) if (wieq(C.apps_title, an[i])) ST.apps_name = i; }
-    Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Settings"); d.w = px(780); d.h = px(620); d.build = settings_build; d.act = settings_act; d.ntab = 8; static const WCHAR *tn[8] = { L"General", L"Appearance", L"View & Files", L"Preview", L"Search", L"Autostart", L"Icons", L"Backup / About" };
-    for (int i = 0; i < 8; i++) scpy(d.tabs[i], 40, tn[i]); dlg_foot(&d, 999, L"Close", 1); dlg_run(&d); settings_commit();
+    Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Settings"); d.w = px(780); d.h = px(620); d.build = settings_build; d.act = settings_act; d.ntab = 11; static const WCHAR *tn[11] = { L"General", L"Appearance", L"View & Files", L"Preview", L"Search", L"Autostart", L"Icons", L"Archives & Games", L"Performance", L"Menus & Pane", L"Backup / About" };
+    for (int i = 0; i < 11; i++) scpy(d.tabs[i], 40, tn[i]); dlg_foot(&d, 999, L"Close", 1); dlg_run(&d); settings_commit();
 }
 
 /* ========================================================================== */
@@ -4510,9 +4792,11 @@ static int lay_dw(const WCHAR *id) { LOv *o = lay_find(id, 0); return o ? px(o->
 static COLORREF lay_col(const WCHAR *id, COLORREF def) { LOv *o = lay_find(id, 0); return (o && (o->col & 0x01000000)) ? (COLORREF)(o->col & 0xFFFFFF) : def; }
 static int lay_hidden(const WCHAR *id) { LOv *o = lay_find(id, 0); return o && o->hide && !g_ed; }
 static void lay_apply(Lay *L, int W, int H) {
-    (void)H; int bh = px(cur_style()->tb_btn);
+    int bh = px(cur_style()->tb_btn);
     for (int i = 0; i < NLEL; i++) { if (LEL[i].kind != 0) continue; LOv *o = lay_find(LEL[i].id, 0); if (!o) continue; RECT *r = (RECT *)((char *)L + LEL[i].off);
         r->left += px(o->dx); r->right += px(o->dx + o->dw); r->top += px(o->dy); r->bottom += px(o->dy + o->dh); if (r->right < r->left + px(16)) r->right = r->left + px(16); if (r->bottom < r->top + px(12)) r->bottom = r->top + px(12); if (o->hide && !g_ed) memset(r, 0, sizeof *r); }
+    if (C.autoadapt) for (int i = 0; i < NLEL; i++) { if (LEL[i].kind != 0) continue; RECT *r = (RECT *)((char *)L + LEL[i].off); if (r->right <= r->left) continue; int w = r->right - r->left, h2 = r->bottom - r->top;
+        if (r->right > W - px(4)) { r->right = W - px(4); r->left = r->right - w; } if (r->left < px(4)) { r->left = px(4); if (r->right > W - px(4)) r->right = W - px(4); } if (r->top < 0) { r->top = 0; r->bottom = h2; } if (H > 0 && r->bottom > H - px(4)) { r->bottom = H - px(4); r->top = r->bottom - h2; if (r->top < 0) r->top = 0; } }
     { int fh = L->search.bottom - L->search.top; L->sdrop = (RECT){ L->search.right - fh * 7 / 10 - px(2), L->search.top, L->search.right - px(2), L->search.bottom }; int subw = tw_(L"Sub", S.font_small) + px(26); L->sub = (RECT){ L->sdrop.left - subw, L->search.top, L->sdrop.left, L->search.bottom };
       if (lay_hidden(L"search")) { memset(&L->sdrop, 0, sizeof L->sdrop); memset(&L->sub, 0, sizeof L->sub); } }
     g_nlr = 0; for (int i = 0; i < g_nov && g_nlr < 8; i++) { LOv *o = &g_ov[i]; if (o->id[0] != 'L' || o->id[1] < '0' || o->id[1] > '9') continue; int k = o->id[1] - '0'; if (k > 7) continue;
@@ -4582,7 +4866,7 @@ static void lay_prompt_name(void) {
 static void lay_add_button(int folder) {
     int slot = -1; for (int k = 0; k < 8; k++) { WCHAR id[4]; wfmt(id, 4, L"L%d", k); if (!lay_find(id, 0)) { slot = k; break; } } if (slot < 0) { toast(L"Up to 8 extra buttons"); return; }
     WCHAR f[MAX_PATH] = L""; if (folder) { BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = S.hwnd; bi.lpszTitle = L"Choose a folder for the new button"; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE; LPITEMIDLIST pl = SHBrowseForFolderW(&bi); if (!pl) return; BOOL ok = SHGetPathFromIDListW(pl, f); CoTaskMemFree(pl); if (!ok) return; }
-    else { OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Programs and files\0*.exe;*.bat;*.cmd;*.lnk\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (!GetOpenFileNameW(&o)) return; }
+    else { OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Programs and files\0*.exe;*.bat;*.cmd;*.lnk\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (!fm_getopen(&o)) return; }
     WCHAR id[4]; wfmt(id, 4, L"L%d", slot); LOv *o = lay_find(id, 1); if (!o) return; scpy(o->path, MAX_PATH, f); WCHAR lb[40]; scpy(lb, 40, base_name(f)); WCHAR *e = PathFindExtensionW(lb); if (*e && !folder) *e = 0; for (WCHAR *c = lb; *c; c++) if (*c == '?' || *c == '*') *c = ' '; scpy(o->label, 24, lb); lay_commit(); g_ed_sel = 1000 + slot;
 }
 static void lay_menu_for(int idx, int x, int y) {
@@ -4617,6 +4901,60 @@ static void lay_move(int x, int y) {
     place_edits(); redraw();
 }
 static void lay_up(void) { if (g_ed_op) { g_ed_op = 0; lay_commit(); } }
+/* ---- Layout editor WINDOW: elements, icons (any image), auto-adjust / auto-adapt, themes ---- */
+static struct { int sel; int act; } g_lw;
+typedef struct { WCHAR key[12]; const WCHAR *label; } LwIcon;
+static LwIcon g_lwi[80]; static int g_nlwi;
+static void lw_collect_icons(void) {
+    static const WCHAR *tbn[13] = { L"Back", L"Forward", L"Up", L"Refresh", L"Menu", L"Search", L"New tab (+)", L"Details view", L"Icons view", L"Tiles view", L"CMD", L"Settings", L"Theme / look" };
+    g_nlwi = 0; for (int k = 0; k < 13; k++) { wfmt(g_lwi[g_nlwi].key, 12, L"tb%d", k); g_lwi[g_nlwi++].label = tbn[k]; }
+    for (int t = 0; t < 8; t++) { RBI it[16]; int n = rb_items(t, it); for (int i = 0; i < n && g_nlwi < 80; i++) { int id = it[i].id & 0x3FFF; WCHAR k[12]; wfmt(k, 12, L"%d", id); int dup = 0; for (int j = 0; j < g_nlwi; j++) if (!wcscmp(g_lwi[j].key, k)) dup = 1; if (!dup) { scpy(g_lwi[g_nlwi].key, 12, k); g_lwi[g_nlwi++].label = it[i].label; } } }
+}
+static void lw_commit_now(void) { lay_commit(); }
+static void lw_build(Dlg *d) {
+    if (d->tab == 0) {
+        dlg_head(d, L"Elements - click one, then set its position and size"); dlg_note(d, L"Offsets are relative to the look's default position. Toolbar buttons, bars and panels can be moved or resized; panels resize only.");
+        for (int i = 0; i < NLEL; i++) { LOv *o = lay_find(LEL[i].id, 0); WCHAR sub[100]; if (o && (o->dx || o->dy || o->dw || o->dh || o->hide)) wfmt(sub, 100, L"%ls  x%+d  y%+d  w%+d  h%+d", o->hide ? L"HIDDEN" : L"moved", o->dx, o->dy, o->dw, o->dh); else scpy(sub, 100, L"default"); dlg_item(d, 100 + i, LEL[i].label, sub, g_lw.sel == i); }
+        for (int k = 0; k < 8; k++) { WCHAR id[4]; wfmt(id, 4, L"L%d", k); LOv *o = lay_find(id, 0); if (!o) continue; dlg_item(d, 140 + k, o->label[0] ? o->label : L"Button", o->path, g_lw.sel == 1000 + k); }
+        if (g_lw.sel >= 0) { WCHAR id[12]; lay_el_id(g_lw.sel, id); LOv *o = lay_find(id, 1); if (o) { int kind = g_lw.sel >= 1000 ? 0 : LEL[g_lw.sel].kind; WCHAR h[80]; wfmt(h, 80, L"Selected: %ls", lay_el_label(g_lw.sel)); dlg_head(d, h);
+            if (kind == 0 || g_lw.sel >= 1000) { dlg_spin(d, 160, L"Move right (+) / left (-)", &o->dx, -600, 600, 4, L"px"); dlg_spin(d, 161, L"Move down (+) / up (-)", &o->dy, -300, 300, 2, L"px"); }
+            if (kind == 0 || g_lw.sel >= 1000) dlg_spin(d, 162, L"Wider (+) / narrower (-)", &o->dw, -200, 600, 4, L"px"); if (kind == 0 || g_lw.sel >= 1000 || kind == 2) dlg_spin(d, 163, L"Taller (+) / shorter (-)", &o->dh, -40, 200, 2, L"px"); if (kind == 3 || kind == 5) dlg_spin(d, 162, L"Wider (+) / narrower (-)", &o->dw, -200, 400, 4, L"px");
+            dlg_check(d, 164, L"Hide this element", &o->hide); dlg_btn(d, 165, L"Reset this element"); if (g_lw.sel >= 1000) dlg_btn(d, 166, L"Delete this button"); } }
+        dlg_head(d, L"New launcher button"); dlg_btn(d, 170, L"Add a button that opens a program or file..."); dlg_btn(d, 171, L"Add a button that opens a folder...");
+    } else if (d->tab == 1) {
+        dlg_head(d, L"Icons - change any button icon with an image file"); dlg_note(d, L"Click a button to choose an image (png, jpg, bmp, gif, webp, ico or an exe). Click a changed one again to replace or remove it. The icon is used in the toolbar, the command strip and the menus.");
+        lw_collect_icons(); for (int i = 0; i < g_nlwi; i++) { const WCHAR *f = btn_icon_key(g_lwi[i].key); dlg_item(d, 200 + i, g_lwi[i].label, f ? f : L"built-in icon", 0); }
+        dlg_btn(d, 290, L"Reset all icons to the built-in ones");
+    } else {
+        dlg_head(d, L"Auto layout"); dlg_btn(d, 300, L"Auto-adjust now - re-flow every button, bar and panel to the default positions and sizes (keeps hidden / colours)");
+        dlg_check(d, 301, L"Auto-adapt - keep buttons and panels inside the window when its size or the zoom changes", &C.autoadapt); dlg_check(d, 302, L"Navigation pane on the right side", &C.nav_right);
+        dlg_head(d, L"Edit on the screen"); dlg_btn(d, 303, L"Close this window and drag elements directly on the screen...");
+        dlg_head(d, L"Layout themes"); dlg_btn(d, 310, L"Save the current layout as a theme..."); for (int i = 0; i < C.layouts.n && i < 40; i++) { const WCHAR *bar = wcschr(C.layouts.v[i], '|'); WCHAR nm[48]; int l = bar ? (int)(bar - C.layouts.v[i]) : 0; if (l > 46) l = 46; memcpy(nm, C.layouts.v[i], l * sizeof(WCHAR)); nm[l] = 0; dlg_item(d, 320 + i, nm, L"Click to load", wieq(nm, C.layout_name)); }
+        dlg_btn(d, 399, L"Reset the whole layout");
+    }
+}
+static int lw_act(Dlg *d, Row *r, int id) {
+    (void)d; if (!r) return id;
+    if (id >= 100 && id < 100 + NLEL) g_lw.sel = id - 100; else if (id >= 140 && id < 148) g_lw.sel = 1000 + id - 140;
+    else if (id >= 160 && id <= 164) { lw_commit_now(); return 0; }
+    else if (id == 165 || id == 166) { if (g_lw.sel >= 0) { WCHAR ids[12]; lay_el_id(g_lw.sel, ids); LOv *o = lay_find(ids, 1); if (o) { if (id == 166 && g_lw.sel >= 1000) { int k = (int)(o - g_ov); for (int i = k; i < g_nov - 1; i++) g_ov[i] = g_ov[i + 1]; g_nov--; g_lw.sel = -1; } else { o->dx = o->dy = o->dw = o->dh = 0; o->hide = 0; o->col = 0; } lw_commit_now(); } } }
+    else if (id == 170) { lay_add_button(0); lw_commit_now(); } else if (id == 171) { lay_add_button(1); lw_commit_now(); }
+    else if (id >= 200 && id < 200 + g_nlwi) { const WCHAR *key = g_lwi[id - 200].key; const WCHAR *cur = btn_icon_key(key); int doit = 1;
+        if (cur) { int a = fm_msgbox(L"This button already has your own icon.\n\nYes = choose another image\nNo = go back to the built-in icon\nCancel = keep it", L"Button icon", MB_YESNOCANCEL | MB_ICONQUESTION); if (a == IDCANCEL) doit = 0; else if (a == IDNO) { set_map(&C.btn_icons, key, NULL); cfg_save(); redraw(); doit = 0; } }
+        if (doit) { WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Images and icons\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.ico;*.tif;*.tiff;*.jfif;*.exe;*.dll\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; o.lpstrTitle = L"Choose the image for this button";
+            if (fm_getopen(&o)) { set_map(&C.btn_icons, key, f); cicons_flush(); cfg_save(); redraw(); } } }
+    else if (id == 290) { sl_clear(&C.btn_icons); cicons_flush(); cfg_save(); redraw(); }
+    else if (id == 300) { for (int i = 0; i < g_nov; i++) { g_ov[i].dx = g_ov[i].dy = g_ov[i].dw = g_ov[i].dh = 0; } lw_commit_now(); toast(L"Layout auto-adjusted"); }
+    else if (id == 301 || id == 302) { lw_commit_now(); } else if (id == 303) return 90;
+    else if (id == 310) { WCHAR n[40]; scpy(n, 40, C.layout_name[0] ? C.layout_name : L"My layout"); if (fm_input(L"Save layout theme", L"Name of the layout theme:", n, 40) && n[0]) lay_save_named(n); }
+    else if (id >= 320 && id < 360) { int i = id - 320; if (i < C.layouts.n) { const WCHAR *bar = wcschr(C.layouts.v[i], '|'); if (bar) { lay_parse(bar + 1); int l = (int)(bar - C.layouts.v[i]); if (l > 30) l = 30; memcpy(C.layout_name, C.layouts.v[i], l * sizeof(WCHAR)); C.layout_name[l] = 0; lw_commit_now(); } } }
+    else if (id == 399) { if (fm_msgbox(L"Reset the whole layout to the look's default?", L"Layout editor", MB_YESNO | MB_ICONQUESTION) == IDYES) { lay_reset(); g_lw.sel = -1; } }
+    return 0;
+}
+static void layout_window(void) {
+    memset(&g_lw, 0, sizeof g_lw); g_lw.sel = -1; Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Layout editor"); d.w = px(780); d.h = px(660); d.build = lw_build; d.act = lw_act; d.ntab = 3; scpy(d.tabs[0], 40, L"Elements"); scpy(d.tabs[1], 40, L"Icons"); scpy(d.tabs[2], 40, L"Auto layout & themes");
+    dlg_foot(&d, 91, L"Done", 1); int rc = dlg_run(&d); lay_commit(); if (rc == 90) lay_set_ed(1);
+}
 
 /* ========================================================================== */
 /* COMPUTER (apps) TAB, FULL BACKUP/RESTORE, DESKTOP SHORTCUTS, CRASH GUARD      */
@@ -4630,7 +4968,7 @@ static void apps_move(int how) {   /* -1 up, 1 down, 2 top, 3 bottom */
 }
 static void apps_add_dialog(void) {
     WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Programs (*.exe;*.lnk;*.bat;*.cmd)\0*.exe;*.lnk;*.bat;*.cmd\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (!GetOpenFileNameW(&o)) return; int h = sl_find(&C.apps_hide, f); if (h >= 0) sl_del(&C.apps_hide, h); if (sl_find(&C.apps, f) < 0) sl_add(&C.apps, f); cfg_save(); if (!wcscmp(curtab()->path, L"::apps")) reload(1); toast(L"Application added");
+    if (!fm_getopen(&o)) return; int h = sl_find(&C.apps_hide, f); if (h >= 0) sl_del(&C.apps_hide, h); if (sl_find(&C.apps, f) < 0) sl_add(&C.apps, f); cfg_save(); if (!wcscmp(curtab()->path, L"::apps")) reload(1); toast(L"Application added");
 }
 static void apps_add_path(const WCHAR *p) { if (path_exists(p) && sl_find(&C.apps, p) < 0) { sl_add(&C.apps, p); int h = sl_find(&C.apps_hide, p); if (h >= 0) sl_del(&C.apps_hide, h); } }
 static void apps_reset(void) { sl_clear(&C.apps); sl_clear(&C.apps_hide); cfg_save(); reload(0); toast(L"List reset - everything found is shown again"); }
@@ -4653,7 +4991,7 @@ static void backup_full(int restore) {
     WCHAR f[MAX_PATH] = L"Files_backup.zip"; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Files backup (*.zip)\0*.zip\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.lpstrDefExt = L"zip";
     WCHAR stage[MAX_PATH]; path_join(stage, MAX_PATH, CONFIG_DIR, restore ? L"restore_tmp" : L"bak_stage");
     if (!restore) {
-        o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST; if (!GetSaveFileNameW(&o)) return; delete_tree(stage); CreateDirectoryW(stage, NULL);
+        o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST; if (!fm_getsave(&o)) return; delete_tree(stage); CreateDirectoryW(stage, NULL);
         SL ic = { 0 }, fo = { 0 }; for (int i = 0; i < C.icon_map.n; i++) sl_add(&ic, C.icon_map.v[i]); for (int i = 0; i < C.doc_fonts.n; i++) sl_add(&fo, C.doc_fonts.v[i]);
         stage_icons(stage, &ic, L"icons", 1); stage_icons(stage, &fo, L"fonts", 0);
         SL oi = C.icon_map, of = C.doc_fonts; C.icon_map = ic; C.doc_fonts = fo; cfg_save(); WCHAR sj[MAX_PATH]; path_join(sj, MAX_PATH, stage, L"settings.json"); CopyFileW(CONFIG_PATH, sj, FALSE); C.icon_map = oi; C.doc_fonts = of; sl_clear(&ic); free(ic.v); sl_clear(&fo); free(fo.v); cfg_save();
@@ -4665,7 +5003,7 @@ static void backup_full(int restore) {
             ok = zw_finish(&z) == 0; CloseHandle(h); if (!ok) DeleteFileW(f); }
         delete_tree(stage); WCHAR m[160]; if (ok) wfmt(m, 160, L"Backup saved (settings, %d icon/font file(s) and %d shortcut(s))", ic.n, ns); toast(ok ? L"Full backup saved (settings, icons, fonts, shortcuts)" : L"Could not write the backup"); (void)m; return;
     }
-    o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (!GetOpenFileNameW(&o)) return; delete_tree(stage); CreateDirectoryW(stage, NULL); WCHAR msg[160] = L""; do_extract(f, stage, msg);
+    o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (!fm_getopen(&o)) return; delete_tree(stage); CreateDirectoryW(stage, NULL); WCHAR msg[160] = L""; do_extract(f, stage, msg);
     WCHAR sj[MAX_PATH]; path_join(sj, MAX_PATH, stage, L"settings.json"); if (!path_exists(sj)) { fm_msgbox(L"This file is not a Files backup (settings.json is missing).", L"Restore", MB_OK | MB_ICONWARNING); delete_tree(stage); return; }
     if (fm_msgbox(L"Restore this backup? Your current settings, icons and shortcuts will be replaced.", L"Restore backup", MB_YESNO | MB_ICONQUESTION) != IDYES) { delete_tree(stage); return; }
     if (!CopyFileW(sj, CONFIG_PATH, FALSE)) { toast(L"Could not restore settings"); delete_tree(stage); return; } cfg_load();
@@ -4690,14 +5028,14 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
 }
 static void choose_video_player(void) {
     WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Programs\0*.exe\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (GetOpenFileNameW(&o)) { scpy(C.video_player, MAX_PATH, f); cfg_save(); toast(L"External video player set"); } else if (C.video_player[0] && fm_msgbox(L"Clear the chosen external player (auto-detect again)?", L"Video player", MB_YESNO) == IDYES) { C.video_player[0] = 0; cfg_save(); }
+    if (fm_getopen(&o)) { scpy(C.video_player, MAX_PATH, f); cfg_save(); toast(L"External video player set"); } else if (C.video_player[0] && fm_msgbox(L"Clear the chosen external player (auto-detect again)?", L"Video player", MB_YESNO) == IDYES) { C.video_player[0] = 0; cfg_save(); }
 }
 
 /* ---- stand-alone Viewer: FilesViewer_x86/x64.exe, or the main exe started with --viewer <file> ---- */
 static int viewer_pick(WCHAR *path) {
     WCHAR full[MAX_PATH] = L""; if (path[0] && GetFullPathNameW(path, MAX_PATH, full, NULL) && path_exists(full) && !dir_exists(full)) { scpy(path, MAX_PATH, full); return 1; }
     WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.lpstrFilter = L"All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR; o.lpstrTitle = L"Files Viewer - choose a file to view";
-    if (!GetOpenFileNameW(&o)) return 0; scpy(path, MAX_PATH, f); return 1;
+    if (!fm_getopen(&o)) return 0; scpy(path, MAX_PATH, f); return 1;
 }
 static void viewer_start(void) {
     C.show_preview = 1; preview_update();
@@ -4721,170 +5059,326 @@ static void open_in_viewer(const WCHAR *file) {
 }
 
 /* ========================================================================== */
-/* GAMES TAB: back up game saves to a .zip and restore them to a save folder    */
-/* A game entry in C.games is  "Name|save path 1|save path 2|..."  (max 16)     */
+/* GAMES: a game entry + .gs files (game card + saved progress)                  */
+/*   C.games entry:  "Name|*icon path|@last .gs path|save path 1|save path 2|..."  */
+/*   .gs file = zip container: _gamesave.txt manifest, p<i>_<name> save entries,    */
+/*   optional embedded icon image.                                                   */
 /* ========================================================================== */
-typedef struct { WCHAR *buf, *name, *p[16]; int np; } GameE;
+static WCHAR g_gs_pending[MAX_PATH];
+typedef struct { WCHAR *buf, *name, *icon, *gs, *p[16]; int np; } GameE;
 static void game_parse(const WCHAR *e, GameE *g) {
     memset(g, 0, sizeof *g); g->buf = wdup(e); g->name = g->buf; WCHAR *s = g->buf, *b = wcschr(s, '|'); if (!b) return; *b = 0; s = b + 1;
-    while (*s) { if (g->np < 16) g->p[g->np++] = s; b = wcschr(s, '|'); if (!b) break; *b = 0; s = b + 1; }
+    while (*s) { WCHAR *nx = wcschr(s, '|'); if (nx) *nx = 0; if (*s == '*') g->icon = s + 1; else if (*s == '@') g->gs = s + 1; else if (*s && g->np < 16) g->p[g->np++] = s; if (!nx) break; s = nx + 1; }
 }
 static void game_free(GameE *g) { free(g->buf); memset(g, 0, sizeof *g); }
-static WCHAR *game_join(const WCHAR *name, WCHAR *const *p, int np) {
-    size_t n = lstrlenW(name) + 4; for (int i = 0; i < np; i++) n += lstrlenW(p[i]) + 2; WCHAR *o = (WCHAR *)malloc(n * sizeof(WCHAR)); lstrcpyW(o, name);
-    for (int i = 0; i < np; i++) { lstrcatW(o, L"|"); lstrcatW(o, p[i]); } return o;
+static WCHAR *game_join(const WCHAR *name, const WCHAR *icon, const WCHAR *gs, WCHAR *const *p, int np) {
+    size_t n = lstrlenW(name) + 8 + (icon ? lstrlenW(icon) : 0) + (gs ? lstrlenW(gs) : 0); for (int i = 0; i < np; i++) n += lstrlenW(p[i]) + 2; WCHAR *o = (WCHAR *)malloc(n * sizeof(WCHAR)); lstrcpyW(o, name);
+    if (icon && icon[0]) { lstrcatW(o, L"|*"); lstrcatW(o, icon); } if (gs && gs[0]) { lstrcatW(o, L"|@"); lstrcatW(o, gs); } for (int i = 0; i < np; i++) { lstrcatW(o, L"|"); lstrcatW(o, p[i]); } return o;
 }
-static void game_set(int idx, const WCHAR *name, WCHAR *const *p, int np) { WCHAR *s = game_join(name, p, np); if (idx >= 0 && idx < C.games.n) { free(C.games.v[idx]); C.games.v[idx] = s; } else { sl_add(&C.games, s); free(s); } }
+static void game_set(int idx, const WCHAR *name, const WCHAR *icon, const WCHAR *gs, WCHAR *const *p, int np) { WCHAR *s = game_join(name, icon, gs, p, np); if (idx >= 0 && idx < C.games.n) { free(C.games.v[idx]); C.games.v[idx] = s; } else { sl_add(&C.games, s); free(s); } }
 static int game_find(const WCHAR *name) { for (int k = 0; k < C.games.n; k++) { GameE g; game_parse(C.games.v[k], &g); int same = !lstrcmpiW(g.name, name); game_free(&g); if (same) return k; } return -1; }
 static void game_clean_name(WCHAR *n) { for (WCHAR *c = n; *c; c++) if (wcschr(L"\\/:*?\"<>|", *c)) *c = '_'; int l = lstrlenW(n); while (l && (n[l - 1] == ' ' || n[l - 1] == '.')) n[--l] = 0; }
-
-static void read_games(Tab *t) {
-    for (int k = 0; k < C.games.n; k++) {
-        GameE g; game_parse(C.games.v[k], &g);
-        if (g.np) {
-            WIN32_FILE_ATTRIBUTE_DATA d; int ok = GetFileAttributesExW(g.p[0], GetFileExInfoStandard, &d) != 0; Item *i = tab_add(t);
-            scpy(i->name, 256, g.name); scpy(i->path, MAX_PATH, g.p[0]); i->ord = k; i->dir = ok && (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            if (ok) { i->mt = d.ftLastWriteTime; i->size = i->dir ? 0 : (((u64)d.nFileSizeHigh << 32) | d.nFileSizeLow); }
-            wfmt(i->type, 64, L"Game saves - %d location%ls%ls", g.np, g.np > 1 ? L"s" : L"", ok ? L"" : L" (missing)");
-        }
-        game_free(&g);
-    }
+static int game_icon_of(int idx, WCHAR *out) {   /* used by the icon painter */
+    out[0] = 0; if (idx < 0 || idx >= C.games.n) return 0; GameE g; game_parse(C.games.v[idx], &g); if (g.icon && g.icon[0]) scpy(out, MAX_PATH, g.icon); game_free(&g); return out[0] != 0;
 }
-static int game_pick_sel(int *idx, int max) {   /* selected games of the Games tab (or the focused one) */
+static void game_stamp(WCHAR *o, int cap) { SYSTEMTIME st; GetLocalTime(&st); wfmt(o, cap, L"%04d%02d%02d_%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute); }
+static int game_pick_sel(int *idx, int max) {
     Tab *t = curtab(); int n = 0; if (wcscmp(t->path, L"::games")) return 0;
     for (int i = 0; i < t->n && n < max; i++) if (t->it[i].sel) idx[n++] = t->it[i].ord;
     if (!n) { Item *f = focus_item(t); if (f) idx[n++] = f->ord; } return n;
 }
-static int game_folder_dialog(const WCHAR *title, WCHAR *out) {
-    BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; bi.lpszTitle = title; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-    LPITEMIDLIST pl = SHBrowseForFolderW(&bi); if (!pl) return 0; BOOL ok = SHGetPathFromIDListW(pl, out); CoTaskMemFree(pl); return ok && out[0];
+static void read_games(Tab *t) {
+    for (int k = 0; k < C.games.n; k++) {
+        GameE g; game_parse(C.games.v[k], &g); WIN32_FILE_ATTRIBUTE_DATA d; int ok = 0; Item *i = tab_add(t); scpy(i->name, 256, g.name); i->ord = k;
+        if (g.np) { ok = GetFileAttributesExW(g.p[0], GetFileExInfoStandard, &d) != 0; scpy(i->path, MAX_PATH, g.p[0]); } else if (g.gs) { ok = GetFileAttributesExW(g.gs, GetFileExInfoStandard, &d) != 0; scpy(i->path, MAX_PATH, g.gs); }
+        i->dir = ok && g.np && (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        if (ok) { i->mt = d.ftLastWriteTime; i->size = i->dir ? 0 : (((u64)d.nFileSizeHigh << 32) | d.nFileSizeLow); }
+        wfmt(i->type, 64, L"Game - %d save location%ls%ls%ls", g.np, g.np == 1 ? L"" : L"s", (g.gs && path_exists(g.gs)) ? L", .gs ready" : L"", (g.np && !ok) ? L" (missing)" : L""); game_free(&g);
+    }
 }
+static int game_folder_dialog(const WCHAR *title, WCHAR *out) { return fm_shell_pick(g_dlg_top ? g_dlg_top : S.hwnd, title, out, 1); }
 static int game_has(WCHAR *const *p, int np, const WCHAR *x) { for (int i = 0; i < np; i++) if (!lstrcmpiW(p[i], x)) return 1; return 0; }
 
-/* Add a game (idx < 0) or add another save location to game idx. Asks for a folder or for files. */
-static void game_add(int idx) {
-    int r = fm_msgbox(L"What should be backed up?\n\nYes = a save folder\nNo = one or more save files\nCancel = stop", idx >= 0 ? L"Add save location" : L"Add game", MB_YESNOCANCEL | MB_ICONQUESTION); if (r == IDCANCEL) return;
-    WCHAR *np_[16]; int nn = 0; WCHAR dflt[128] = L"Game";
-    if (r == IDYES) { WCHAR f[MAX_PATH]; if (!game_folder_dialog(L"Choose the game's save folder", f)) return; np_[nn++] = wdup(f); const WCHAR *b = base_name(f); if (*b) scpy(dflt, 128, b); }
-    else {
-        WCHAR *buf = (WCHAR *)calloc(32768, sizeof(WCHAR)); OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"All files\0*.*\0"; o.lpstrFile = buf; o.nMaxFile = 32768;
-        o.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR; o.lpstrTitle = L"Choose the game's save file(s)";
-        if (!GetOpenFileNameW(&o)) { free(buf); return; }
-        WCHAR *first = buf; size_t l1 = lstrlenW(first);
-        if (first[l1 + 1] == 0) { np_[nn++] = wdup(first); WCHAR par[MAX_PATH]; parent_of(first, par); const WCHAR *b = base_name(par); if (*b) scpy(dflt, 128, b); }
-        else { WCHAR *nm = first + l1 + 1; const WCHAR *b = base_name(first); if (*b) scpy(dflt, 128, b); while (*nm && nn < 16) { WCHAR full[MAX_PATH]; path_join(full, MAX_PATH, first, nm); np_[nn++] = wdup(full); nm += lstrlenW(nm) + 1; } }
-        free(buf);
+/* three-way choice window */
+static const WCHAR *g_ch_msg;
+static void ch_build(Dlg *d) { dlg_note(d, g_ch_msg); }
+static int ch_act(Dlg *d, Row *r, int id) { (void)d; (void)r; return id; }
+static int fm_choice3(const WCHAR *title, const WCHAR *msg, const WCHAR *b1, const WCHAR *b2, const WCHAR *b3) {
+    Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, title); g_ch_msg = msg; HDC dc = GetDC(NULL); HGDIOBJ of = SelectObject(dc, S.font ? S.font : GetStockObject(DEFAULT_GUI_FONT)); RECT q = { 0, 0, px(500), 0 }; DrawTextW(dc, msg, -1, &q, DT_WORDBREAK | DT_CALCRECT | DT_NOPREFIX); SelectObject(dc, of); ReleaseDC(NULL, dc);
+    d.w = px(660); d.h = q.bottom + px(34 + 54 + 50); if (d.h < px(200)) d.h = px(200); d.build = ch_build; d.act = ch_act; dlg_foot(&d, 1, b1, 1); dlg_foot(&d, 2, b2, 0); dlg_foot(&d, 3, b3, 0); int r = dlg_run(&d); return r >= 1 && r <= 3 ? r : 3;
+}
+
+/* ---- default folder for .gs files (D:\Games\Backups\, falls back if that drive does not exist) ---- */
+static void gs_folder(WCHAR *out) {
+    WCHAR d[MAX_PATH]; scpy(d, MAX_PATH, C.gs_dir[0] ? C.gs_dir : L"D:\\Games\\Backups\\"); int l = lstrlenW(d); while (l > 3 && (d[l - 1] == '\\' || d[l - 1] == '/')) d[--l] = 0;
+    if (!dir_exists(d)) SHCreateDirectoryExW(NULL, d, NULL);
+    if (!dir_exists(d)) { WCHAR h[MAX_PATH]; home_dir(h); path_join(d, MAX_PATH, h, L"Games\\Backups"); SHCreateDirectoryExW(NULL, d, NULL); }
+    scpy(out, MAX_PATH, d);
+}
+
+/* ---- write a .gs ---- */
+static int gs_write(const GameE *g, const WCHAR *out) {   /* 1 ok, 0 failed. Written beside the target first, so a failure never destroys an old .gs */
+    WCHAR mf[MAX_PATH], tmp[MAX_PATH]; path_join(mf, MAX_PATH, CONFIG_DIR, L"_gamesave.txt"); wfmt(tmp, MAX_PATH, L"%ls.tmp", out);
+    WCHAR *tx = (WCHAR *)malloc((800 + 16 * (2 * MAX_PATH + 60)) * sizeof(WCHAR)); wfmt(tx, 400, L"FilesGameSave=1\nname=%ls\n", g->name);
+    WCHAR iconent[40] = L""; if (g->icon && g->icon[0]) { WCHAR l[MAX_PATH + 20]; wfmt(l, MAX_PATH + 20, L"icon=%ls\n", g->icon); lstrcatW(tx, l);
+        const WCHAR *ex = PathFindExtensionW(g->icon); WIN32_FILE_ATTRIBUTE_DATA ad; if (ext_in(ex, L".png.jpg.jpeg.bmp.gif.ico.webp.tif.tiff.jfif.") && GetFileAttributesExW(g->icon, GetFileExInfoStandard, &ad) && ad.nFileSizeHigh == 0 && ad.nFileSizeLow < (4u << 20)) { wfmt(iconent, 40, L"icon%ls", ex); wfmt(l, 80, L"iconfile=%ls\n", iconent); lstrcatW(tx, l); } }
+    for (int i = 0; i < g->np; i++) { if (!path_exists(g->p[i])) continue; const WCHAR *b = base_name(g->p[i]); WCHAR line[2 * MAX_PATH + 40]; wfmt(line, 2 * MAX_PATH + 40, L"path=%ls|p%d_%ls\n", g->p[i], i, *b ? b : L"root"); lstrcatW(tx, line); }
+    int bl = WideCharToMultiByte(CP_UTF8, 0, tx, -1, NULL, 0, NULL, NULL); char *ub = (char *)malloc(bl + 1); WideCharToMultiByte(CP_UTF8, 0, tx, -1, ub, bl, NULL, NULL); free(tx);
+    HANDLE mh = CreateFileW(mf, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (mh == INVALID_HANDLE_VALUE) { free(ub); return 0; } DWORD w = 0; WriteFile(mh, ub, bl > 0 ? bl - 1 : 0, &w, NULL); CloseHandle(mh); free(ub);
+    WCHAR par[MAX_PATH + 2]; parent_of(out, par); if (par[0] && !dir_exists(par)) SHCreateDirectoryExW(NULL, par, NULL);
+    HANDLE h = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (h == INVALID_HANDLE_VALUE) { DeleteFileW(mf); return 0; }
+    CompCtx c; memset(&c, 0, sizeof c); ZW z; Sink sk = { fsink_write, h }; zw_init(&z, sk); c.z = &z; c.mode = 0; comp_add(&c, mf, "_gamesave.txt", 0, 0);
+    if (iconent[0]) { char rel[80]; WideCharToMultiByte(CP_UTF8, 0, iconent, -1, rel, 80, NULL, NULL); comp_add(&c, g->icon, rel, 0, 0); }
+    for (int i = 0; i < g->np; i++) { if (!path_exists(g->p[i])) continue; const WCHAR *b = base_name(g->p[i]); WCHAR en[300]; wfmt(en, 300, L"p%d_%ls", i, *b ? b : L"root"); char rel[700]; WideCharToMultiByte(CP_UTF8, 0, en, -1, rel, 700, NULL, NULL); comp_add(&c, g->p[i], rel, dir_exists(g->p[i]), 0); }
+    int ok = zw_finish(&z) == 0; CloseHandle(h); DeleteFileW(mf);
+    if (ok) ok = MoveFileExW(tmp, out, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED) != 0; if (!ok) DeleteFileW(tmp); return ok;
+}
+
+/* ---- Add game window ---- */
+static struct { WCHAR icon[MAX_PATH], name[128], dir[MAX_PATH]; WCHAR *p[16]; int np; } g_ga;
+static void ga_build(Dlg *d) {
+    WCHAR b[MAX_PATH + 120]; dlg_head(d, L"New game");
+    wfmt(b, MAX_PATH + 120, L"Icon (.exe or an image, optional):  %ls", g_ga.icon[0] ? g_ga.icon : L"(none) - click to choose"); dlg_btn(d, 1, b);
+    wfmt(b, MAX_PATH + 120, L"Game name:  %ls", g_ga.name[0] ? g_ga.name : L"(click to type)"); dlg_btn(d, 2, b);
+    dlg_head(d, L"Game save / progress (optional)"); dlg_btn(d, 3, L"Choose save folder..."); dlg_btn(d, 4, L"Choose save file(s)...");
+    for (int i = 0; i < g_ga.np; i++) dlg_item(d, 300 + i, base_name(g_ga.p[i]), g_ga.p[i], 0); if (g_ga.np) dlg_note(d, L"Click an entry to remove it.");
+    dlg_head(d, L".gs file"); wfmt(b, MAX_PATH + 120, L"Save the .gs file in:  %ls   (click to change)", g_ga.dir); dlg_btn(d, 6, b);
+}
+static void ga_defaults(void) {
+    if (!g_ga.name[0]) { if (g_ga.icon[0] && ext_in(PathFindExtensionW(g_ga.icon), L".exe.")) { scpy(g_ga.name, 128, base_name(g_ga.icon)); WCHAR *e = PathFindExtensionW(g_ga.name); if (*e) *e = 0; }
+        else if (g_ga.np) { const WCHAR *b = base_name(g_ga.p[0]); if (dir_exists(g_ga.p[0])) scpy(g_ga.name, 128, b); else { WCHAR par[MAX_PATH]; parent_of(g_ga.p[0], par); scpy(g_ga.name, 128, base_name(par)); } } }
+}
+static int ga_act(Dlg *d, Row *r, int id) {
+    (void)d; if (!r) return id; HWND ow = g_dlg_top ? g_dlg_top : S.hwnd;
+    if (id == 1) { WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = ow; o.lpstrFilter = L"Game icon (exe or image)\0*.exe;*.ico;*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff;*.jfif\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; o.lpstrTitle = L"Choose the game's icon (.exe or image)"; if (fm_getopen(&o)) { scpy(g_ga.icon, MAX_PATH, f); ga_defaults(); } }
+    else if (id == 2) { WCHAR n[128]; scpy(n, 128, g_ga.name); if (fm_input(L"Game name", L"Name of the game:", n, 128) && n[0]) { game_clean_name(n); scpy(g_ga.name, 128, n); } }
+    else if (id == 3) { WCHAR f[MAX_PATH]; if (game_folder_dialog(L"Choose the game's save / progress folder", f) && g_ga.np < 16 && !game_has(g_ga.p, g_ga.np, f)) { g_ga.p[g_ga.np++] = wdup(f); ga_defaults(); } }
+    else if (id == 4) { WCHAR *buf = (WCHAR *)calloc(32768, sizeof(WCHAR)); OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = ow; o.lpstrFilter = L"All files\0*.*\0"; o.lpstrFile = buf; o.nMaxFile = 32768; o.Flags = OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; o.lpstrTitle = L"Choose the game's save file(s)";
+        if (fm_getopen(&o)) { WCHAR *first = buf; size_t l1 = lstrlenW(first); if (first[l1 + 1] == 0) { if (g_ga.np < 16 && !game_has(g_ga.p, g_ga.np, first)) g_ga.p[g_ga.np++] = wdup(first); }
+            else { WCHAR *nm = first + l1 + 1; while (*nm && g_ga.np < 16) { WCHAR full[MAX_PATH]; path_join(full, MAX_PATH, first, nm); if (!game_has(g_ga.p, g_ga.np, full)) g_ga.p[g_ga.np++] = wdup(full); nm += lstrlenW(nm) + 1; } } ga_defaults(); } free(buf); }
+    else if (id >= 300 && id < 316) { int i = id - 300; if (i < g_ga.np) { free(g_ga.p[i]); for (int k = i; k < g_ga.np - 1; k++) g_ga.p[k] = g_ga.p[k + 1]; g_ga.np--; } }
+    else if (id == 6) { WCHAR f[MAX_PATH]; if (game_folder_dialog(L"Folder for the .gs files", f)) scpy(g_ga.dir, MAX_PATH, f); }
+    return 0;
+}
+static void game_add(void) {
+    memset(&g_ga, 0, sizeof g_ga); gs_folder(g_ga.dir);
+    Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Add game"); d.w = px(700); d.h = px(560); d.build = ga_build; d.act = ga_act; dlg_foot(&d, 90, L"OK", 1); dlg_foot(&d, 91, L"Cancel", 0); int rc = dlg_run(&d);
+    if (rc == 90) {
+        ga_defaults(); if (!g_ga.name[0]) scpy(g_ga.name, 128, L"Game"); game_clean_name(g_ga.name); WCHAR base[128]; scpy(base, 128, g_ga.name); for (int k = 2; game_find(g_ga.name) >= 0 && k < 200; k++) wfmt(g_ga.name, 128, L"%ls (%d)", base, k);
+        WCHAR fn[160], out[MAX_PATH]; wfmt(fn, 160, L"%ls.gs", g_ga.name); path_join(out, MAX_PATH, g_ga.dir, fn); int go = 1;
+        if (path_exists(out)) { WCHAR io[200], in[200]; file_info_str(out, io, 200); scpy(in, 200, L"New game card"); int ap = 0; int r = conflict_dialog(fn, io, in, 0, &ap); if (r == 1) DeleteFileW(out); else if (r == 2) unique_new(g_ga.dir, g_ga.name, L".gs", out, MAX_PATH); else go = 0; }
+        if (go) {
+            GameE g; memset(&g, 0, sizeof g); g.name = g_ga.name; g.icon = g_ga.icon[0] ? g_ga.icon : NULL; g.np = g_ga.np; for (int i = 0; i < g_ga.np; i++) g.p[i] = g_ga.p[i];
+            HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT)); int ok = gs_write(&g, out); SetCursor(oc);
+            if (ok) { game_set(-1, g_ga.name, g_ga.icon, out, g_ga.p, g_ga.np); scpy(C.gs_dir, MAX_PATH, g_ga.dir); cfg_save(); cicons_flush(); if (!wcscmp(curtab()->path, L"::games")) reload(0); WCHAR m[MAX_PATH + 60]; wfmt(m, MAX_PATH + 60, L"Saved %ls", out); toast(m); }
+            else fm_msgbox(L"The .gs file could not be written. Check the folder and free space.", L"Add game", MB_OK | MB_ICONWARNING);
+        }
     }
-    if (idx >= 0 && idx < C.games.n) {
-        GameE g; game_parse(C.games.v[idx], &g); WCHAR *all[16]; int na = 0; for (int i = 0; i < g.np; i++) all[na++] = g.p[i];
-        for (int i = 0; i < nn && na < 16; i++) if (!game_has(all, na, np_[i])) all[na++] = np_[i];
-        WCHAR nm[128]; scpy(nm, 128, g.name); game_set(idx, nm, all, na); game_free(&g);
-    } else {
-        WCHAR nm[128]; scpy(nm, 128, dflt); game_clean_name(nm); if (!nm[0]) scpy(nm, 128, L"Game"); WCHAR base[128]; scpy(base, 128, nm); for (int k = 2; game_find(nm) >= 0 && k < 200; k++) wfmt(nm, 128, L"%ls (%d)", base, k);
-        game_set(-1, nm, np_, nn);
-    }
-    for (int i = 0; i < nn; i++) free(np_[i]);
-    cfg_save(); if (!wcscmp(curtab()->path, L"::games")) reload(0); toast(idx >= 0 ? L"Save location added" : L"Game added - select it and choose Backup");
+    for (int i = 0; i < g_ga.np; i++) free(g_ga.p[i]); memset(&g_ga, 0, sizeof g_ga);
+}
+
+/* add more save folders / files to an existing game */
+static void game_add_paths(int idx) {
+    if (idx < 0 || idx >= C.games.n) return; int r = fm_msgbox(L"What should be added?\n\nYes = a save folder\nNo = one or more save files\nCancel = stop", L"Add save location", MB_YESNOCANCEL | MB_ICONQUESTION); if (r == IDCANCEL) return;
+    WCHAR *np_[16]; int nn = 0;
+    if (r == IDYES) { WCHAR f[MAX_PATH]; if (!game_folder_dialog(L"Choose the game's save folder", f)) return; np_[nn++] = wdup(f); }
+    else { WCHAR *buf = (WCHAR *)calloc(32768, sizeof(WCHAR)); OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"All files\0*.*\0"; o.lpstrFile = buf; o.nMaxFile = 32768; o.Flags = OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        if (!fm_getopen(&o)) { free(buf); return; } WCHAR *first = buf; size_t l1 = lstrlenW(first); if (first[l1 + 1] == 0) np_[nn++] = wdup(first); else { WCHAR *nm = first + l1 + 1; while (*nm && nn < 16) { WCHAR full[MAX_PATH]; path_join(full, MAX_PATH, first, nm); np_[nn++] = wdup(full); nm += lstrlenW(nm) + 1; } } free(buf); }
+    GameE g; game_parse(C.games.v[idx], &g); WCHAR *all[16]; int na = 0; for (int i = 0; i < g.np; i++) all[na++] = g.p[i]; for (int i = 0; i < nn && na < 16; i++) if (!game_has(all, na, np_[i])) all[na++] = np_[i];
+    WCHAR nm[128]; scpy(nm, 128, g.name); game_set(idx, nm, g.icon, g.gs, all, na); game_free(&g); for (int i = 0; i < nn; i++) free(np_[i]); cfg_save(); reload(0); toast(L"Save location added - use Backup saves to update the .gs file");
 }
 static void game_rename(int idx, const WCHAR *nn) {
     if (idx < 0 || idx >= C.games.n) return; WCHAR nm[128]; scpy(nm, 128, nn); game_clean_name(nm); if (!nm[0]) return; int o = game_find(nm); if (o >= 0 && o != idx) { toast(L"A game with that name already exists"); return; }
-    GameE g; game_parse(C.games.v[idx], &g); game_set(idx, nm, g.p, g.np); game_free(&g); cfg_save(); reload(0);
+    GameE g; game_parse(C.games.v[idx], &g); game_set(idx, nm, g.icon, g.gs, g.p, g.np); game_free(&g); cfg_save(); reload(0);
+}
+static void game_set_icon(int idx) {
+    if (idx < 0 || idx >= C.games.n) return; WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Game icon (exe or image)\0*.exe;*.ico;*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff;*.jfif\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; o.lpstrTitle = L"Choose the game's icon";
+    if (!fm_getopen(&o)) return; GameE g; game_parse(C.games.v[idx], &g); WCHAR nm[128]; scpy(nm, 128, g.name); game_set(idx, nm, f, g.gs, g.p, g.np); game_free(&g); cfg_save(); cicons_flush(); reload(0);
 }
 static void game_remove(void) {
     int idx[256]; int n = game_pick_sel(idx, 256); if (!n) { toast(L"Select a game first"); return; }
-    if (C.confirm_ops) { WCHAR m[200]; wfmt(m, 200, n == 1 ? L"Remove this game from the list?\nSave files and backups are not deleted." : L"Remove %d games from the list?\nSave files and backups are not deleted.", n); if (fm_msgbox(m, L"Remove game", MB_YESNO | MB_ICONQUESTION) != IDYES) return; }
+    if (C.confirm_ops) { WCHAR m[200]; wfmt(m, 200, n == 1 ? L"Remove this game from the list?\nSave files and .gs files are not deleted." : L"Remove %d games from the list?\nSave files and .gs files are not deleted.", n); if (fm_msgbox(m, L"Remove game", MB_YESNO | MB_ICONQUESTION) != IDYES) return; }
     for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (idx[j] > idx[i]) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
-    for (int i = 0; i < n; i++) if (idx[i] >= 0 && idx[i] < C.games.n) sl_del(&C.games, idx[i]);
-    cfg_save(); reload(0); toast(L"Removed from the list");
+    for (int i = 0; i < n; i++) if (idx[i] >= 0 && idx[i] < C.games.n) sl_del(&C.games, idx[i]); cfg_save(); reload(0); toast(L"Removed from the list");
 }
 
-/* ---- backup ---- */
-static int game_zip(const GameE *g, const WCHAR *out) {
-    WCHAR mf[MAX_PATH]; path_join(mf, MAX_PATH, CONFIG_DIR, L"_gamesave.txt"); int any = 0;
-    WCHAR *tx = (WCHAR *)malloc((600 + 16 * (2 * MAX_PATH + 40)) * sizeof(WCHAR)); wfmt(tx, 400, L"FilesGameSave=1\nname=%ls\n", g->name);
-    for (int i = 0; i < g->np; i++) { if (!path_exists(g->p[i])) continue; const WCHAR *b = base_name(g->p[i]); WCHAR line[2 * MAX_PATH + 40]; wfmt(line, 2 * MAX_PATH + 40, L"path=%ls|p%d_%ls\n", g->p[i], i, *b ? b : L"root"); lstrcatW(tx, line); any++; }
-    if (!any) { free(tx); return -1; }
-    int bl = WideCharToMultiByte(CP_UTF8, 0, tx, -1, NULL, 0, NULL, NULL); char *ub = (char *)malloc(bl + 1); WideCharToMultiByte(CP_UTF8, 0, tx, -1, ub, bl, NULL, NULL); free(tx);
-    HANDLE mh = CreateFileW(mf, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (mh == INVALID_HANDLE_VALUE) { free(ub); return 0; } DWORD w = 0; WriteFile(mh, ub, bl > 0 ? bl - 1 : 0, &w, NULL); CloseHandle(mh); free(ub);
-    HANDLE h = CreateFileW(out, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (h == INVALID_HANDLE_VALUE) { DeleteFileW(mf); return 0; }
-    CompCtx c; memset(&c, 0, sizeof c); ZW z; Sink sk = { fsink_write, h }; zw_init(&z, sk); c.z = &z; c.mode = 0; comp_add(&c, mf, "_gamesave.txt", 0, 0);
-    for (int i = 0; i < g->np; i++) { if (!path_exists(g->p[i])) continue; const WCHAR *b = base_name(g->p[i]); WCHAR en[300]; wfmt(en, 300, L"p%d_%ls", i, *b ? b : L"root"); char rel[700]; WideCharToMultiByte(CP_UTF8, 0, en, -1, rel, 700, NULL, NULL); comp_add(&c, g->p[i], rel, dir_exists(g->p[i]), 0); }
-    int ok = zw_finish(&z) == 0; CloseHandle(h); DeleteFileW(mf); if (!ok) DeleteFileW(out); return ok;
+/* ---- backup a new save into a .gs (New file or replace the Old one) ---- */
+static int gs_backup_one(const GameE *g, int idx, int choice /* 0 ask, 1 new, 2 old */, WCHAR *outp) {
+    WCHAR out[MAX_PATH]; int have_old = g->gs && g->gs[0] && path_exists(g->gs);
+    if (choice == 0 && have_old) { WCHAR m[MAX_PATH + 240]; wfmt(m, MAX_PATH + 240, L"Back up the new save of \"%ls\".\n\nNew = create another .gs file\nOld = replace the opened/previous .gs:\n%ls", g->name, g->gs); choice = fm_choice3(L"Backup new save", m, L"New .gs", L"Old (replace)", L"Cancel"); if (choice == 3) return -1; }
+    if (!have_old && choice != 1) choice = 1;
+    if (choice == 2) scpy(out, MAX_PATH, g->gs);
+    else { WCHAR dir[MAX_PATH], st[32], nm[128], fn[200]; if (g->gs && g->gs[0]) parent_of(g->gs, dir); else gs_folder(dir); if (!dir[0] || !dir_exists(dir)) gs_folder(dir); game_stamp(st, 32); scpy(nm, 128, g->name); game_clean_name(nm); wfmt(fn, 200, L"%ls_%ls.gs", nm, st);
+        OPENFILENAMEW o; WCHAR f[MAX_PATH]; path_join(f, MAX_PATH, dir, fn); memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Game save (*.gs)\0*.gs\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.lpstrDefExt = L"gs"; o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST; o.lpstrTitle = L"Save the new .gs file as"; o.lpstrInitialDir = dir;
+        if (!fm_getsave(&o)) return -1; scpy(out, MAX_PATH, f); }
+    HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT)); int ok = gs_write(g, out); SetCursor(oc); if (!ok) return 0; if (outp) scpy(outp, MAX_PATH, out);
+    if (idx >= 0 && idx < C.games.n) { WCHAR nm[128]; scpy(nm, 128, g->name); game_set(idx, nm, g->icon, out, (WCHAR *const *)g->p, g->np); cfg_save(); } return 1;
 }
 static void game_backup(int all) {
     int idx[256]; int n = 0; if (all) { for (int k = 0; k < C.games.n && n < 256; k++) idx[n++] = k; } else n = game_pick_sel(idx, 256);
     if (!n) { toast(all ? L"No games yet - use Add game" : L"Select a game first"); return; }
-    SYSTEMTIME st; GetLocalTime(&st); WCHAR dir[MAX_PATH] = L""; WCHAR single[MAX_PATH] = L"";
-    if (n == 1) { GameE g; game_parse(C.games.v[idx[0]], &g); WCHAR nm[128]; scpy(nm, 128, g.name); game_clean_name(nm); wfmt(single, MAX_PATH, L"%ls_save_%04d%02d%02d_%02d%02d.zip", nm, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute); game_free(&g);
-        OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Game save backup (*.zip)\0*.zip\0"; o.lpstrFile = single; o.nMaxFile = MAX_PATH; o.lpstrDefExt = L"zip"; o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR; o.lpstrTitle = L"Save the game backup as";
-        if (!GetSaveFileNameW(&o)) return; }
-    else if (!game_folder_dialog(L"Choose a folder to store the backups", dir)) return;
-    HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT)); int good = 0, bad = 0, missing = 0;
+    int choice = 0; if (n > 1) { int anyold = 0; for (int i = 0; i < n; i++) { GameE g; game_parse(C.games.v[idx[i]], &g); if (g.gs && path_exists(g.gs)) anyold = 1; game_free(&g); }
+        if (anyold) { int r = fm_choice3(L"Backup all saves", L"Back up the saves of the selected games.\n\nNew = create a new .gs file for each game (in the .gs folder)\nOld = replace each game's existing .gs file", L"New .gs files", L"Old (replace)", L"Cancel"); if (r == 3) return; choice = r; } else choice = 1; }
+    int good = 0, bad = 0;
     for (int i = 0; i < n; i++) {
-        if (idx[i] < 0 || idx[i] >= C.games.n) continue; GameE g; game_parse(C.games.v[idx[i]], &g); WCHAR out[MAX_PATH];
-        if (n == 1) scpy(out, MAX_PATH, single); else { WCHAR nm[128]; scpy(nm, 128, g.name); game_clean_name(nm); WCHAR fn[200]; wfmt(fn, 200, L"%ls_save_%04d%02d%02d_%02d%02d.zip", nm, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute); path_join(out, MAX_PATH, dir, fn); }
-        int r = game_zip(&g, out); if (r > 0) good++; else if (r < 0) missing++; else bad++; game_free(&g);
+        if (idx[i] < 0 || idx[i] >= C.games.n) continue; GameE g; game_parse(C.games.v[idx[i]], &g); int has = 0; for (int k = 0; k < g.np; k++) if (path_exists(g.p[k])) has = 1;
+        if (!has) { bad++; game_free(&g); continue; }
+        int r; if (n > 1) { WCHAR dir[MAX_PATH], st[32], nm[128], fn[200], out[MAX_PATH]; int old = choice == 2 && g.gs && path_exists(g.gs); if (old) scpy(out, MAX_PATH, g.gs); else { if (g.gs && g.gs[0]) parent_of(g.gs, dir); else gs_folder(dir); if (!dir_exists(dir)) gs_folder(dir); game_stamp(st, 32); scpy(nm, 128, g.name); game_clean_name(nm); wfmt(fn, 200, L"%ls_%ls.gs", nm, st); path_join(out, MAX_PATH, dir, fn); }
+            r = gs_write(&g, out); if (r) { WCHAR nn[128]; scpy(nn, 128, g.name); game_set(idx[i], nn, g.icon, out, g.p, g.np); } }
+        else r = gs_backup_one(&g, idx[i], 0, NULL);
+        if (r > 0) good++; else if (r == 0) bad++; game_free(&g);
     }
-    SetCursor(oc); WCHAR m[240];
-    if (missing && !good && !bad) fm_msgbox(L"The save location was not found, so nothing was backed up.\nCheck the game's folder (right-click > Add save location).", L"Game backup", MB_OK | MB_ICONWARNING);
-    else if (bad) { wfmt(m, 240, L"%d backup(s) saved, %d failed (could not write the file).", good, bad); fm_msgbox(m, L"Game backup", MB_OK | MB_ICONWARNING); }
-    else { wfmt(m, 240, good == 1 ? L"Game backup saved" : L"%d game backups saved", good); toast(m); }
+    cfg_save(); if (!wcscmp(curtab()->path, L"::games")) reload(0); WCHAR m[200];
+    if (bad) { wfmt(m, 200, L"%d backup(s) saved, %d skipped or failed (save location missing or not writable).", good, bad); fm_msgbox(m, L"Game backup", MB_OK | MB_ICONWARNING); } else if (good) { wfmt(m, 200, good == 1 ? L".gs saved" : L"%d .gs files saved", good); toast(m); }
 }
 
-/* ---- restore ---- */
-typedef struct { WCHAR orig[MAX_PATH], ent[300]; } GRe;
-static void game_restore(void) {
-    WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Game save backup (*.zip)\0*.zip\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR; o.lpstrTitle = L"Choose a game save backup";
-    if (!GetOpenFileNameW(&o)) return;
-    WCHAR stage[MAX_PATH]; path_join(stage, MAX_PATH, CONFIG_DIR, L"game_stage"); delete_tree(stage); CreateDirectoryW(stage, NULL);
-    HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT)); WCHAR msg[200] = L""; do_extract(f, stage, msg); SetCursor(oc);
-    GRe *re = (GRe *)calloc(16, sizeof(GRe)); int ne = 0; WCHAR name[128] = L""; int manifest = 0;
-    WCHAR mf[MAX_PATH]; path_join(mf, MAX_PATH, stage, L"_gamesave.txt"); HANDLE mh = CreateFileW(mf, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (mh != INVALID_HANDLE_VALUE) {
-        DWORD got = 0; char *b = (char *)calloc(1, 131073); ReadFile(mh, b, 131072, &got, NULL); CloseHandle(mh); int wl = MultiByteToWideChar(CP_UTF8, 0, b, -1, NULL, 0); WCHAR *w = (WCHAR *)calloc(wl + 2, sizeof(WCHAR)); MultiByteToWideChar(CP_UTF8, 0, b, -1, w, wl); free(b);
-        if (wcsstr(w, L"FilesGameSave=1")) { manifest = 1; WCHAR *ln = w; while (ln && *ln) { WCHAR *nl = wcschr(ln, '\n'); if (nl) *nl = 0; int l = lstrlenW(ln); if (l && ln[l - 1] == '\r') ln[l - 1] = 0;
-                if (!wcsncmp(ln, L"name=", 5)) scpy(name, 128, ln + 5); else if (!wcsncmp(ln, L"path=", 5) && ne < 16) { WCHAR *bar = wcsrchr(ln + 5, '|'); if (bar) { *bar = 0; scpy(re[ne].orig, MAX_PATH, ln + 5); scpy(re[ne].ent, 300, bar + 1); ne++; } }
-                ln = nl ? nl + 1 : NULL; } }
-        free(w);
-    }
-    if (!manifest) {   /* a plain .zip: every top-level item is restored */
-        WCHAR pat[MAX_PATH]; path_join(pat, MAX_PATH, stage, L"*"); WIN32_FIND_DATAW fd; HANDLE q = FindFirstFileW(pat, &fd);
-        if (q != INVALID_HANDLE_VALUE) { do { if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || ne >= 16) continue; re[ne].orig[0] = 0; scpy(re[ne].ent, 300, fd.cFileName); ne++; } while (FindNextFileW(q, &fd)); FindClose(q); }
-        WCHAR tmp[MAX_PATH]; scpy(tmp, MAX_PATH, base_name(f)); WCHAR *dot = wcsrchr(tmp, '.'); if (dot) *dot = 0; scpy(name, 128, tmp);
-    }
-    int have = 0; for (int i = 0; i < ne; i++) { WCHAR s[MAX_PATH]; path_join(s, MAX_PATH, stage, re[i].ent); if (path_exists(s)) have++; }
-    if (!have) { fm_msgbox(L"This backup contains no files that can be restored.", L"Restore game save", MB_OK | MB_ICONWARNING); goto done; }
-    int orig_ok = manifest; for (int i = 0; i < ne; i++) if (!re[i].orig[0]) orig_ok = 0;
-    WCHAR dest[MAX_PATH] = L""; int use_orig = 0;
-    if (orig_ok) {
-        WCHAR m[MAX_PATH + 320]; wfmt(m, MAX_PATH + 320, L"Restore \"%ls\" to its original save location?\n\n%ls%ls\n\nYes = original location\nNo = choose another save folder\nCancel = stop", name, re[0].orig, ne > 1 ? L"  (and more)" : L"");
-        int r = fm_msgbox(m, L"Restore game save", MB_YESNOCANCEL | MB_ICONQUESTION); if (r == IDCANCEL) goto done; use_orig = r == IDYES;
-    }
-    if (!use_orig && !game_folder_dialog(L"Choose the game's save folder to restore into", dest)) goto done;
-    {   /* confirm overwrite */
-        int exists = 0; for (int i = 0; i < ne; i++) { if (use_orig) { if (path_exists(re[i].orig)) exists = 1; } else if (dir_exists(dest)) { WCHAR *u = wcschr(re[i].ent, '_'); WCHAR t[MAX_PATH]; path_join(t, MAX_PATH, dest, (re[i].ent[0] == 'p' && u) ? u + 1 : re[i].ent); if (path_exists(t)) exists = 1; } }
-        WCHAR m[MAX_PATH + 260]; wfmt(m, MAX_PATH + 260, exists ? L"Files that already exist in\n%ls\nwill be replaced by the backup. Continue?" : L"Restore the saved files into\n%ls ?", use_orig ? re[0].orig : dest);
-        if (fm_msgbox(m, L"Restore game save", MB_YESNO | (exists ? MB_ICONWARNING : MB_ICONQUESTION)) != IDYES) goto done;
-    }
-    {
-        int ok = 0, bad = 0; oc = SetCursor(LoadCursor(NULL, IDC_WAIT));
-        for (int i = 0; i < ne; i++) {
-            WCHAR src[MAX_PATH], dst[MAX_PATH]; path_join(src, MAX_PATH, stage, re[i].ent); if (!path_exists(src)) continue; int isd = dir_exists(src);
-            if (use_orig) scpy(dst, MAX_PATH, re[i].orig);
-            else if (ne == 1 && isd) scpy(dst, MAX_PATH, dest);
-            else { WCHAR *u = wcschr(re[i].ent, '_'); path_join(dst, MAX_PATH, dest, (re[i].ent[0] == 'p' && u) ? u + 1 : re[i].ent); }
-            WCHAR t[MAX_PATH + 4]; if (isd) { wfmt(t, MAX_PATH + 4, L"%ls\\", dst); ensure_dirs(t); } else { scpy(t, MAX_PATH + 4, dst); ensure_dirs(t); }
-            if (copy_tree(src, dst)) ok++; else bad++;
+/* ---- open a .gs: Backup New Save / Restore Save / Cancel ---- */
+typedef struct { WCHAR name[128], icon[MAX_PATH], iconfile[64]; WCHAR orig[16][MAX_PATH], ent[16][300]; int np; } GsMan;
+static int gs_manifest(const WCHAR *stage, GsMan *m) {
+    memset(m, 0, sizeof *m); WCHAR mf[MAX_PATH]; path_join(mf, MAX_PATH, stage, L"_gamesave.txt"); HANDLE h = CreateFileW(mf, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL); if (h == INVALID_HANDLE_VALUE) return 0;
+    DWORD got = 0; char *b = (char *)calloc(1, 131073); ReadFile(h, b, 131072, &got, NULL); CloseHandle(h); int wl = MultiByteToWideChar(CP_UTF8, 0, b, -1, NULL, 0); WCHAR *w = (WCHAR *)calloc(wl + 2, sizeof(WCHAR)); MultiByteToWideChar(CP_UTF8, 0, b, -1, w, wl); free(b); int ok = 0;
+    if (wcsstr(w, L"FilesGameSave=1")) { ok = 1; WCHAR *ln = w; while (ln && *ln) { WCHAR *nl = wcschr(ln, '\n'); if (nl) *nl = 0; int l = lstrlenW(ln); if (l && ln[l - 1] == '\r') ln[l - 1] = 0;
+            if (!wcsncmp(ln, L"name=", 5)) scpy(m->name, 128, ln + 5); else if (!wcsncmp(ln, L"icon=", 5)) scpy(m->icon, MAX_PATH, ln + 5); else if (!wcsncmp(ln, L"iconfile=", 9)) scpy(m->iconfile, 64, ln + 9);
+            else if (!wcsncmp(ln, L"path=", 5) && m->np < 16) { WCHAR *bar = wcsrchr(ln + 5, '|'); if (bar) { *bar = 0; scpy(m->orig[m->np], MAX_PATH, ln + 5); scpy(m->ent[m->np], 300, bar + 1); m->np++; } } ln = nl ? nl + 1 : NULL; } }
+    free(w); return ok;
+}
+static int gs_force_copy(const WCHAR *src, const WCHAR *dst) {   /* overwrite everything, including read-only files; folders are merged */
+    DWORD a = GetFileAttributesW(src); if (a == INVALID_FILE_ATTRIBUTES) return 0;
+    if (a & FILE_ATTRIBUTE_DIRECTORY) { if (!CreateDirectoryW(dst, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return 0; WCHAR pat[MAX_PATH]; path_join(pat, MAX_PATH, src, L"*"); WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd); int ok = 1; if (h == INVALID_HANDLE_VALUE) return 1;
+        do { if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue; WCHAR s2[MAX_PATH], d2[MAX_PATH]; path_join(s2, MAX_PATH, src, fd.cFileName); path_join(d2, MAX_PATH, dst, fd.cFileName); if (!gs_force_copy(s2, d2)) ok = 0; } while (FindNextFileW(h, &fd)); FindClose(h); return ok; }
+    if (path_exists(dst)) clear_ro(dst); return CopyFileW(src, dst, FALSE) != 0;
+}
+static struct { WCHAR name[128], file[MAX_PATH]; int np; WCHAR first[MAX_PATH]; } g_go;
+static void go_build(Dlg *d) {
+    WCHAR b[MAX_PATH + 60], t[64]; dlg_head(d, L"Game save file"); dlg_kv(d, L"Game", g_go.name[0] ? g_go.name : L"(unnamed)"); dlg_kv(d, L"File", base_name(g_go.file));
+    WIN32_FILE_ATTRIBUTE_DATA ad; if (GetFileAttributesExW(g_go.file, GetFileExInfoStandard, &ad)) { fmt_date(&ad.ftLastWriteTime, t, 64); dlg_kv(d, L"Saved on", t); }
+    wfmt(b, MAX_PATH + 60, L"%d save location%ls%ls%ls", g_go.np, g_go.np == 1 ? L"" : L"s", g_go.np ? L":  " : L"", g_go.first); dlg_kv(d, L"Contains", b);
+    dlg_note(d, L"Restore Save puts the saved progress back into its original folder (existing files are replaced). Backup New Save stores your current progress in a new or in this .gs file.");
+}
+static int go_act(Dlg *d, Row *r, int id) { (void)d; if (r) return 0; return id; }
+static void gs_open(const WCHAR *file) {
+    if (!path_exists(file)) { toast(L"The .gs file was not found"); return; }
+    WCHAR stage[MAX_PATH]; path_join(stage, MAX_PATH, CONFIG_DIR, L"game_stage"); delete_tree(stage); CreateDirectoryW(stage, NULL); HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    int pm = g_ex_mode; g_ex_mode = 1; WCHAR msg[200] = L""; do_extract(file, stage, msg); g_ex_mode = pm; SetCursor(oc);
+    GsMan *m = (GsMan *)calloc(1, sizeof *m); if (!gs_manifest(stage, m)) { fm_msgbox(L"This is not a valid Files .gs game save.", L"Game save", MB_OK | MB_ICONWARNING); free(m); delete_tree(stage); return; }
+    if (!m->name[0]) { scpy(m->name, 128, base_name(file)); WCHAR *e = PathFindExtensionW(m->name); if (*e) *e = 0; }
+    /* an icon that only exists inside the .gs is unpacked next to the settings */
+    if (m->iconfile[0] && (!m->icon[0] || !path_exists(m->icon))) { WCHAR src[MAX_PATH], dd[MAX_PATH], dst[MAX_PATH]; path_join(src, MAX_PATH, stage, m->iconfile); path_join(dd, MAX_PATH, CONFIG_DIR, L"game_icons"); CreateDirectoryW(dd, NULL); WCHAR nm[160]; scpy(nm, 160, m->name); game_clean_name(nm); WCHAR fn[260]; wfmt(fn, 260, L"%ls%ls", nm, PathFindExtensionW(m->iconfile)); path_join(dst, MAX_PATH, dd, fn); if (CopyFileW(src, dst, FALSE)) scpy(m->icon, MAX_PATH, dst); }
+    scpy(g_go.name, 128, m->name); scpy(g_go.file, MAX_PATH, file); g_go.np = m->np; scpy(g_go.first, MAX_PATH, m->np ? m->orig[0] : L"");
+    Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Game save"); d.w = px(680); d.h = px(420); d.build = go_build; d.act = go_act; dlg_foot(&d, 1, L"Backup New Save", 0); dlg_foot(&d, 2, L"Restore Save", 1); dlg_foot(&d, 3, L"Cancel", 0); int rc = dlg_run(&d);
+    if (rc == 2) {   /* restore */
+        if (!m->np) { fm_msgbox(L"This .gs file has no saved progress to restore (it only holds the game's name and icon).", L"Restore Save", MB_OK | MB_ICONINFORMATION); goto done; }
+        int go = 1; if (C.gs_confirm) { WCHAR q[MAX_PATH + 300]; wfmt(q, MAX_PATH + 300, L"Restore the saved progress of \"%ls\"?\n\nIt will be copied into:\n%ls%ls\n\nExisting files there will be REPLACED.", m->name, m->orig[0], m->np > 1 ? L"\n(and the other saved locations)" : L""); go = fm_msgbox(q, L"Restore Save", MB_OKCANCEL | MB_ICONWARNING) == IDOK; }
+        if (go) {
+            int ok = 0, bad = 0; oc = SetCursor(LoadCursor(NULL, IDC_WAIT));
+            for (int i = 0; i < m->np; i++) { WCHAR src[MAX_PATH], t[MAX_PATH + 4]; path_join(src, MAX_PATH, stage, m->ent[i]); if (!path_exists(src)) continue; int isd = dir_exists(src); if (isd) { wfmt(t, MAX_PATH + 4, L"%ls\\", m->orig[i]); ensure_dirs(t); } else { scpy(t, MAX_PATH + 4, m->orig[i]); ensure_dirs(t); }
+                if (gs_force_copy(src, m->orig[i])) ok++; else bad++; }
+            SetCursor(oc);
+            { int gi = game_find(m->name); WCHAR *ps[16]; for (int i = 0; i < m->np; i++) ps[i] = m->orig[i]; WCHAR nn[128]; scpy(nn, 128, m->name); if (gi >= 0) { GameE g; game_parse(C.games.v[gi], &g); game_set(gi, nn, m->icon[0] ? m->icon : g.icon, file, g.np ? g.p : ps, g.np ? g.np : m->np); game_free(&g); } else game_set(-1, nn, m->icon, file, ps, m->np); cfg_save(); cicons_flush(); if (!wcscmp(curtab()->path, L"::games")) reload(0); }
+            if (bad) { WCHAR q[200]; wfmt(q, 200, L"%d location(s) restored, %d could not be written (is the game running, or is the drive missing?).", ok, bad); fm_msgbox(q, L"Restore Save", MB_OK | MB_ICONWARNING); } else toast(L"Game save restored");
         }
-        SetCursor(oc);
-        if (manifest && name[0] && game_find(name) < 0) { WCHAR *ps[16]; int np = 0; if (use_orig) { for (int i = 0; i < ne; i++) ps[np++] = re[i].orig; } else ps[np++] = dest; if (np) { game_set(-1, name, ps, np); cfg_save(); } }
-        if (!wcscmp(curtab()->path, L"::games")) reload(0);
-        if (bad) { WCHAR m[200]; wfmt(m, 200, L"%d item(s) restored, %d could not be written (is the game running?).", ok, bad); fm_msgbox(m, L"Restore game save", MB_OK | MB_ICONWARNING); }
-        else toast(L"Game save restored");
+    } else if (rc == 1) {   /* backup a new save */
+        GameE g; memset(&g, 0, sizeof g); g.name = m->name; g.icon = m->icon[0] ? m->icon : NULL; g.gs = (WCHAR *)file; g.np = 0; int has = 0; for (int i = 0; i < m->np; i++) { g.p[g.np++] = m->orig[i]; if (path_exists(m->orig[i])) has = 1; }
+        if (!has) fm_msgbox(L"None of this game's save locations exist on this PC right now, so there is nothing new to back up.", L"Backup New Save", MB_OK | MB_ICONWARNING);
+        else { int gi = game_find(m->name); WCHAR outp[MAX_PATH] = L""; int r = gs_backup_one(&g, gi, 0, outp); if (r > 0) { if (gi < 0) { WCHAR nn[128]; scpy(nn, 128, m->name); game_set(-1, nn, m->icon, outp, g.p, g.np); cfg_save(); } cicons_flush(); if (!wcscmp(curtab()->path, L"::games")) reload(0); toast(L"New save backed up"); } else if (r == 0) fm_msgbox(L"The .gs file could not be written.", L"Backup New Save", MB_OK | MB_ICONWARNING); }
     }
 done:
-    free(re); delete_tree(stage);
+    free(m); delete_tree(stage);
 }
+static void game_restore(void) {   /* menu: choose a .gs (or older .zip) and open it */
+    WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Game save (*.gs;*.zip)\0*.gs;*.zip\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; o.lpstrTitle = L"Choose a .gs game save";
+    WCHAR sd[MAX_PATH]; gs_folder(sd); o.lpstrInitialDir = sd; if (fm_getopen(&o)) gs_open(f);
+}
+static void game_open_gs(void) {   /* the selected game's own .gs */
+    int gi[2]; if (game_pick_sel(gi, 2) < 1) { toast(L"Select a game first"); return; } GameE g; game_parse(C.games.v[gi[0]], &g); WCHAR f[MAX_PATH] = L""; if (g.gs) scpy(f, MAX_PATH, g.gs); game_free(&g);
+    if (f[0] && path_exists(f)) gs_open(f); else { toast(L"No .gs yet - creating one with Backup"); game_backup(0); }
+}
+static void gs_associate(void) {   /* double-clicking a .gs in Windows/Wine opens it with this program */
+    WCHAR exe[MAX_PATH]; GetModuleFileNameW(NULL, exe, MAX_PATH); HKEY k; WCHAR cmd[MAX_PATH + 20]; wfmt(cmd, MAX_PATH + 20, L"\"%ls\" \"%%1\"", exe); int ok = 1;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\.gs", 0, NULL, 0, KEY_WRITE, NULL, &k, NULL) == ERROR_SUCCESS) { RegSetValueExW(k, NULL, 0, REG_SZ, (const BYTE *)L"FilesGameSave", 28); RegCloseKey(k); } else ok = 0;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\FilesGameSave\\shell\\open\\command", 0, NULL, 0, KEY_WRITE, NULL, &k, NULL) == ERROR_SUCCESS) { RegSetValueExW(k, NULL, 0, REG_SZ, (const BYTE *)cmd, (lstrlenW(cmd) + 1) * 2); RegCloseKey(k); } else ok = 0;
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL); toast(ok ? L".gs files now open with Files" : L"Could not register .gs files");
+}
+
+/* ========================================================================== */
+/* EXTRACT / COMPRESS WINDOWS (WinRAR style): folder, format, overwrite mode,   */
+/* tick the files to extract, add/remove files to compress                      */
+/* ========================================================================== */
+static int xd_list(const WCHAR *path, FArc *a) {   /* entry names of any supported archive; 0 = ok */
+    int k = arc_kind_of(path); memset(a, 0, sizeof *a); Rd r; FRd f;
+    if (k == ARC_ZIP || k == ARC_ISO) { if (frd_open(&r, &f, path)) return -1; int rc = k == ARC_ZIP ? zip_open(a, &r) : iso_open(a, &r); CloseHandle(f.h); return rc; }
+    if (k == ARC_TAR || k == ARC_TGZ) { size_t n; u8 *b = read_whole(path, &n, 400u << 20); if (!b) return -1; u8 *t = b; size_t tn = n; if (k != ARC_TAR) { if (gzip_unpack(b, n, &t, &tn, 600u << 20)) { free(b); return -1; } free(b); b = t; } tar_scan(a, t, tn); free(b); return 0; }
+    if (k == ARC_EXT) return ext_list(path, a); return -1;
+}
+typedef struct { WCHAR src[MAX_PATH], dest[MAX_PATH]; int newfolder, mode; FArc a; int have, n; int *chk; } XDlg;
+static XDlg g_xd;
+static void xd_stem(const WCHAR *src, WCHAR *stem) { scpy(stem, MAX_PATH, base_name(src)); int l = lstrlenW(stem); if (l > 7 && !_wcsicmp(stem + l - 7, L".tar.gz")) stem[l - 7] = 0; else { WCHAR *e = PathFindExtensionW(stem); if (*e) *e = 0; } }
+static void xd_build(Dlg *d) {
+    static const WCHAR *const md[4] = { L"Ask me for each file", L"Replace existing files", L"Skip existing files", L"Rename the new files" }; WCHAR b[MAX_PATH + 80], st[MAX_PATH];
+    dlg_head(d, L"Extract"); dlg_kv(d, L"Archive", base_name(g_xd.src)); wfmt(b, MAX_PATH + 80, L"Destination folder:  %ls   (click to change)", g_xd.dest); dlg_btn(d, 1, b);
+    xd_stem(g_xd.src, st); wfmt(b, MAX_PATH + 80, L"Extract into a new folder named \"%ls\"", st); dlg_check(d, 2, b, &g_xd.newfolder); dlg_choice(d, 3, L"If a file already exists", &g_xd.mode, md, 4);
+    if (g_xd.have && g_xd.n > 0) { WCHAR h[80]; wfmt(h, 80, L"Files to extract (%d entries) - tick what you want", g_xd.n); dlg_head(d, h); dlg_btn(d, 4, L"Select all"); dlg_btn(d, 5, L"Select none");
+        for (int i = 0; i < g_xd.n && i < 400; i++) { WCHAR nm[400]; MultiByteToWideChar(CP_UTF8, 0, g_xd.a.e[i].name, -1, nm, 400); dlg_check(d, 100 + i, nm, &g_xd.chk[i]); }
+        if (g_xd.n > 400) dlg_note(d, L"Only the first 400 entries are listed; the rest are extracted when 'Select all' is on."); }
+    else dlg_note(d, L"All files in the archive will be extracted.");
+}
+static int xd_act(Dlg *d, Row *r, int id) {
+    (void)d; if (!r) return id;
+    if (id == 1) { WCHAR f[MAX_PATH]; if (fm_shell_pick(g_dlg_top ? g_dlg_top : S.hwnd, L"Extract to folder", f, 1)) scpy(g_xd.dest, MAX_PATH, f); }
+    else if (id == 4) for (int i = 0; i < g_xd.n; i++) g_xd.chk[i] = 1; else if (id == 5) for (int i = 0; i < g_xd.n; i++) g_xd.chk[i] = 0;
+    return 0;
+}
+/* preset: 0 here, 1 new folder next to the archive, 2 ask for the folder first */
+static void extract_window(const WCHAR *archive, int preset) {
+    memset(&g_xd, 0, sizeof g_xd); scpy(g_xd.src, MAX_PATH, archive); parent_of(archive, g_xd.dest); g_xd.newfolder = preset == 1; g_xd.mode = 0;
+    if (preset == 2) { WCHAR f[MAX_PATH]; if (!fm_shell_pick(S.hwnd, L"Extract to folder", f, 1)) return; scpy(g_xd.dest, MAX_PATH, f); }
+    g_xd.have = xd_list(archive, &g_xd.a) == 0; g_xd.n = g_xd.have ? g_xd.a.n : 0; g_xd.chk = (int *)calloc(g_xd.n + 1, sizeof(int)); for (int i = 0; i < g_xd.n; i++) g_xd.chk[i] = 1;
+    Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Extract archive"); d.w = px(680); d.h = px(640); d.build = xd_build; d.act = xd_act; dlg_foot(&d, 90, L"Extract", 1); dlg_foot(&d, 91, L"Cancel", 0);
+    int rc = dlg_run(&d);
+    if (rc == 90) {
+        WCHAR dest[MAX_PATH]; scpy(dest, MAX_PATH, g_xd.dest); if (g_xd.newfolder) { WCHAR st[MAX_PATH]; xd_stem(archive, st); unique_name(g_xd.dest, st, 1, dest, MAX_PATH); }
+        int all = 1; for (int i = 0; i < g_xd.n; i++) if (!g_xd.chk[i]) all = 0; char *sel = NULL; SL names; memset(&names, 0, sizeof names);
+        if (!all) { int ncheck = 0; sel = (char *)calloc(g_xd.n + 1, 1); for (int i = 0; i < g_xd.n; i++) { sel[i] = (char)(g_xd.chk[i] != 0); if (sel[i]) { ncheck++; if (!g_xd.a.e[i].isdir) { WCHAR nm[600]; MultiByteToWideChar(CP_UTF8, 0, g_xd.a.e[i].name, -1, nm, 600); sl_add(&names, nm); } } }
+            if (!ncheck) { toast(L"Nothing ticked - nothing extracted"); free(sel); sel = NULL; } }
+        if (all || sel) start_extract_ex(archive, dest, g_xd.mode, sel, g_xd.n, &names); sl_clear(&names); free(names.v);
+    }
+    if (g_xd.have) arc_free(&g_xd.a); free(g_xd.chk); memset(&g_xd, 0, sizeof g_xd);
+}
+
+/* ---- compress window ---- */
+static struct { WCHAR name[MAX_PATH], dir[MAX_PATH]; int fmt; SL srcs; } g_cd;
+static const WCHAR *const CD_FMT[5] = { L"zip", L"tar", L"tgz", L"7z", L"rar" };
+static void cd_build(Dlg *d) {
+    static const WCHAR *const fn[5] = { L"ZIP (.zip)", L"TAR (.tar)", L"TAR.GZ (.tar.gz)", L"7z (.7z) - needs 7-Zip", L"RAR (.rar) - needs WinRAR" }; WCHAR b[MAX_PATH + 80];
+    dlg_head(d, L"Create archive"); wfmt(b, MAX_PATH + 80, L"Archive name:  %ls   (click to change)", g_cd.name); dlg_btn(d, 1, b); wfmt(b, MAX_PATH + 80, L"Save in:  %ls   (click to change)", g_cd.dir); dlg_btn(d, 2, b); dlg_choice(d, 3, L"Archive format", &g_cd.fmt, fn, 5);
+    dlg_head(d, L"Files and folders to add"); dlg_btn(d, 4, L"Add files..."); dlg_btn(d, 5, L"Add a folder..."); for (int i = 0; i < g_cd.srcs.n && i < 200; i++) dlg_item(d, 200 + i, base_name(g_cd.srcs.v[i]), g_cd.srcs.v[i], 0);
+    if (g_cd.srcs.n) dlg_note(d, L"Click an entry to remove it from the list.");
+}
+static int cd_act(Dlg *d, Row *r, int id) {
+    (void)d; if (!r) return id;
+    if (id == 1) { WCHAR n[MAX_PATH]; scpy(n, MAX_PATH, g_cd.name); if (fm_input(L"Archive name", L"Name of the archive (without extension):", n, MAX_PATH) && n[0]) { for (WCHAR *c = n; *c; c++) if (wcschr(L"\\/:*?\"<>|", *c)) *c = '_'; scpy(g_cd.name, MAX_PATH, n); } }
+    else if (id == 2) { WCHAR f[MAX_PATH]; if (fm_shell_pick(g_dlg_top ? g_dlg_top : S.hwnd, L"Save the archive in", f, 1)) scpy(g_cd.dir, MAX_PATH, f); }
+    else if (id == 4) { WCHAR *buf = (WCHAR *)calloc(32768, sizeof(WCHAR)); OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"All files\0*.*\0"; o.lpstrFile = buf; o.nMaxFile = 32768; o.Flags = OFN_ALLOWMULTISELECT | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; o.lpstrTitle = L"Add files to the archive";
+        if (fm_getopen(&o)) { WCHAR *first = buf; size_t l1 = lstrlenW(first); if (first[l1 + 1] == 0) { if (sl_find(&g_cd.srcs, first) < 0) sl_add(&g_cd.srcs, first); } else { WCHAR *nm = first + l1 + 1; while (*nm) { WCHAR full[MAX_PATH]; path_join(full, MAX_PATH, first, nm); if (sl_find(&g_cd.srcs, full) < 0) sl_add(&g_cd.srcs, full); nm += lstrlenW(nm) + 1; } } } free(buf); }
+    else if (id == 5) { WCHAR f[MAX_PATH]; if (fm_shell_pick(g_dlg_top ? g_dlg_top : S.hwnd, L"Add a folder to the archive", f, 1) && sl_find(&g_cd.srcs, f) < 0) sl_add(&g_cd.srcs, f); }
+    else if (id >= 200 && id < 400) { if (id - 200 < g_cd.srcs.n) sl_del(&g_cd.srcs, id - 200); }
+    return 0;
+}
+static void compress_window(const WCHAR *fmt) {
+    Tab *t = curtab(); memset(&g_cd, 0, sizeof g_cd); collect_sel(t, &g_cd.srcs); for (int i = 0; i < 5; i++) if (!wcscmp(CD_FMT[i], fmt)) g_cd.fmt = i;
+    if (!g_cd.srcs.n) { toast(L"Select files or folders first"); free(g_cd.srcs.v); return; }
+    WCHAR dir[MAX_PATH]; parent_of(g_cd.srcs.v[0], dir); if (!dir[0]) scpy(dir, MAX_PATH, t->path); scpy(g_cd.dir, MAX_PATH, dir);
+    if (g_cd.srcs.n == 1) { scpy(g_cd.name, MAX_PATH, base_name(g_cd.srcs.v[0])); if (!dir_exists(g_cd.srcs.v[0])) { WCHAR *e = PathFindExtensionW(g_cd.name); if (*e) *e = 0; } } else { const WCHAR *dn = base_name(dir); scpy(g_cd.name, MAX_PATH, *dn ? dn : L"Archive"); }
+    Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Compress"); d.w = px(680); d.h = px(620); d.build = cd_build; d.act = cd_act; dlg_foot(&d, 90, L"Create", 1); dlg_foot(&d, 91, L"Cancel", 0);
+    int rc = dlg_run(&d);
+    if (rc == 90 && g_cd.srcs.n) {
+        WCHAR ext[16], out[MAX_PATH]; wfmt(ext, 16, L".%ls", !wcscmp(CD_FMT[g_cd.fmt], L"tgz") ? L"tar.gz" : CD_FMT[g_cd.fmt]); WCHAR fn[MAX_PATH + 16]; wfmt(fn, MAX_PATH + 16, L"%ls%ls", g_cd.name, ext); path_join(out, MAX_PATH, g_cd.dir, fn);
+        int go = 1; if (path_exists(out)) { WCHAR io[200], in[200]; file_info_str(out, io, 200); wfmt(in, 200, L"New archive with %d item(s)", g_cd.srcs.n); int ap = 0; int r = conflict_dialog(fn, io, in, 0, &ap); if (r == 1) DeleteFileW(out); else if (r == 2) unique_new(g_cd.dir, g_cd.name, ext, out, MAX_PATH); else go = 0; }
+        if (go) { SL s = g_cd.srcs; memset(&g_cd.srcs, 0, sizeof g_cd.srcs); start_compress_job(&s, CD_FMT[g_cd.fmt], out); return; }
+    }
+    sl_clear(&g_cd.srcs); free(g_cd.srcs.v); memset(&g_cd.srcs, 0, sizeof g_cd.srcs);
+}
+static void start_compress(const WCHAR *fmt) { if (C.arc_dialogs) compress_window(fmt); else start_compress_quick(fmt); }
 
 /* ========================================================================== */
 /* MENUS (themed popups) + COMMAND DISPATCH                                    */
@@ -4902,13 +5396,15 @@ static void add_extract_menu(PMenu *m, int en) { mi(m, CMD_EXTRACT_HERE, L"Extra
 static PMenu *build_menu(int w) {
     PMenu *m = pm_new(); Tab *t = curtab(); int real = t->path[0] && !is_special(t->path); int ns = sel_count(t, NULL);
     if (w == 0) { mi(m, CMD_NEWTAB, L"New tab\tCtrl+T", 0, 1); mi(m, CMD_NEWFOLDER, L"New folder\tCtrl+Shift+N", 0, real); mi(m, CMD_NEWFILE, L"New text file", 0, real); pm_sep(m); mi(m, CMD_CMD, L"Open CMD here", 0, 1); mi(m, CMD_PROPS, L"Properties\tAlt+Enter", 0, ns == 1); mi(m, CMD_SETTINGS, L"Settings...", 0, 1); pm_sep(m); mi(m, CMD_EXIT, L"Exit", 0, 1); }
+    else if (w == 6) { mi(m, CMD_APPS, L"Open", 0, 1); pm_sep(m); mi(m, CMD_APP_ADD, L"Add application...", 0, 1); mi(m, CMD_APP_UP, L"Move up", 0, 1); mi(m, CMD_APP_DOWN, L"Move down", 0, 1); mi(m, CMD_APP_TOP, L"Move to top", 0, 1); mi(m, CMD_APP_REMOVE, L"Remove from list", 0, 1); pm_sep(m); mi(m, CMD_APP_RESET, L"Reset the list", 0, 1); mi(m, CMD_SETTINGS, L"Rename this tab in Settings...", 0, 1); }
+    else if (w == 7) { mi(m, CMD_GAMES, L"Open Games", 0, 1); pm_sep(m); mi(m, CMD_GAME_ADD, L"Add game...", 0, 1); mi(m, CMD_GAME_OPENGS, L"Open .gs (Backup / Restore)", 0, 1); mi(m, CMD_GAME_RESTORE, L"Open a .gs file...", 0, 1); pm_sep(m); mi(m, CMD_GAME_BACKUP, L"Backup New Save...", 0, 1); mi(m, CMD_GAME_BACKUP_ALL, L"Backup all games", 0, C.games.n > 0); pm_sep(m); mi(m, CMD_GAME_ICON, L"Change game icon...", 0, 1); mi(m, CMD_GAME_ADDPATH, L"Add save folder/files...", 0, 1); mi(m, CMD_GAME_REMOVE, L"Remove from list", 0, 1); pm_sep(m); mi(m, CMD_GS_ASSOC, L"Open .gs files with Files", 0, 1); }
     else if (w == 1) { mi(m, CMD_CUT, L"Cut\tCtrl+X", 0, ns > 0); mi(m, CMD_COPY, L"Copy\tCtrl+C", 0, ns > 0); mi(m, CMD_PASTE, L"Paste\tCtrl+V", 0, S.clip.n > 0 && real); pm_sep(m); mi(m, CMD_SELALL, L"Select all\tCtrl+A", 0, 1); mi(m, CMD_SELNONE, L"Select none", 0, 1); mi(m, CMD_INVERT, L"Invert selection", 0, 1);
         pm_sep(m); mi(m, CMD_RENAME, L"Rename\tF2", 0, ns == 1); mi(m, CMD_DELETE, C.recycle ? L"Delete (to Recycle Bin)\tDel" : L"Delete\tDel", 0, ns > 0); mi(m, CMD_DELETE_PERM, L"Delete permanently\tShift+Del", 0, ns > 0); mi(m, CMD_COPYPATH, L"Copy path", 0, ns == 1); mi(m, CMD_SHORTCUT, L"Create shortcut on Desktop", 0, ns > 0); mi(m, CMD_SHORTCUT_HERE, L"Create shortcut here", 0, ns > 0 && real); }
     else if (w == 2) { int vm = view_mode(); mi(m, CMD_VDET, L"Details", vm == 0, 1); mi(m, CMD_VICON, L"Icons", vm == 1, 1); mi(m, CMD_VTILE, L"Tiles", vm == 2, 1); pm_sep(m); add_sort_menu(pm_sub(m, L"Sort by")); pm_sep(m);
         mi(m, CMD_PREVIEW, L"Preview pane", C.show_preview, 1); mi(m, CMD_TREE, L"Tree view", C.show_tree, 1); mi(m, CMD_CHECKS, L"Selection tick boxes", C.checkboxes, 1); mi(m, CMD_HIDDEN, L"Show hidden files", C.show_hidden, 1); mi(m, CMD_THUMBS, L"Thumbnails", C.thumbnails, 1); mi(m, CMD_COUNTS, L"Counts in status bar", C.show_counts, 1);
         pm_sep(m); mi(m, CMD_ICON_PLUS, L"Larger icons", 0, 1); mi(m, CMD_ICON_MINUS, L"Smaller icons", 0, 1); mi(m, CMD_ZOOM_IN, L"Zoom interface in\tCtrl+=", 0, 1); mi(m, CMD_ZOOM_OUT, L"Zoom interface out\tCtrl+-", 0, 1); mi(m, CMD_PREVW, L"Cycle preview width", 0, C.show_preview); mi(m, CMD_RIBBON, L"Command strip", C.ribbon_open, 1); pm_sep(m); mi(m, CMD_REFRESH, L"Refresh\tF5", 0, 1); }
     else if (w == 3) { mi(m, CMD_BACK, L"Back\tAlt+Left", 0, t->hidx > 0); mi(m, CMD_FWD, L"Forward\tAlt+Right", 0, t->hidx < t->hist.n - 1); mi(m, CMD_UP, L"Up\tBackspace", 0, t->path[0] != 0); pm_sep(m); mi(m, CMD_HOME, cur_style()->sec[0], 0, 1); mi(m, CMD_RECENT, cur_style()->sec[1], 0, 1); mi(m, CMD_FAV, cur_style()->sec[2], 0, 1); mi(m, CMD_PC, cur_style()->sec[3], 0, 1); mi(m, CMD_APPS, C.apps_title[0] ? C.apps_title : L"Computer", 0, 1); mi(m, CMD_GAMES, L"Games", 0, 1); mi(m, CMD_TRASH, L"Recycle Bin", 0, 1); }
-    else if (w == 4) { mi(m, CMD_LAYOUT_EDIT, L"Layout editor (move / resize / recolour)...", g_ed, 1); mi(m, CMD_LAYOUT_NAVSIDE, L"Navigation pane on the right", C.nav_right, 1); pm_sep(m); mi(m, CMD_STYLES, L"Styles dialog...", 0, 1); mi(m, CMD_OSNEXT, L"Switch to next OS theme", 0, 1); pm_sep(m);
+    else if (w == 4) { mi(m, CMD_LAYOUT_EDIT, L"Layout editor window...", g_ed, 1); mi(m, CMD_LAYOUT_DRAG, L"Drag elements on screen", g_ed, 1); mi(m, CMD_LAYOUT_NAVSIDE, L"Navigation pane on the right", C.nav_right, 1); pm_sep(m); mi(m, CMD_STYLES, L"Styles dialog...", 0, 1); mi(m, CMD_OSNEXT, L"Switch to next OS theme", 0, 1); pm_sep(m);
         PMenu *sm = pm_sub(m, L"Quick look picker"); for (int i = 0; i < (int)NSTYLES; i++) mi(sm, CMD_STYLE0 + STYLE_ORDER[i], OS_STYLES[STYLE_ORDER[i]].label, STYLE_ORDER[i] == style_index(C.os_style), 1);
         if (is_win10()) { PMenu *th = pm_sub(m, L"Theme"); for (int i = 0; i < (int)NTHEMES; i++) mi(th, CMD_THEME0 + i, FM_THEMES[i].name, wieq(C.theme, FM_THEMES[i].name), 1); } else mi(m, CMD_DARK, L"Dark variant", C.style_dark, cur_style()->has_dark);
         add_accent_menu(pm_sub(m, L"Accent colour")); mi(m, CMD_STYLEFONTS, L"Use the look's fonts", C.style_fonts, 1); }
@@ -4917,13 +5413,13 @@ static PMenu *build_menu(int w) {
         pm_sep(m); mi(m, CMD_SUBFOLDERS, L"Search inside subfolders", C.search_subfolders, 1); mi(m, CMD_RESTORE, L"Restore tabs on start", C.restore_session, 1); mi(m, CMD_FONT_PLUS, L"Larger font", 0, 1); mi(m, CMD_FONT_MINUS, L"Smaller font", 0, 1); pm_sep(m); mi(m, CMD_BACKUP_FULL, L"Full backup (settings, icons, shortcuts)...", 0, 1); mi(m, CMD_RESTORE_FULL, L"Full restore...", 0, 1); mi(m, CMD_BACKUP, L"Back up settings only...", 0, 1); mi(m, CMD_RESTORE_CFG, L"Restore settings only...", 0, 1); pm_sep(m); mi(m, CMD_SETTINGS, L"Settings...", 0, 1); mi(m, CMD_ABOUT, L"About", 0, 1); }
     return m;
 }
-static void main_menu(void) { PMenu *m = pm_new(); static const WCHAR *n[6] = { L"File", L"Edit", L"View", L"Go", L"Style", L"Tools" }; for (int i = 0; i < 6; i++) { PMenu *s = pm_sub(m, n[i]); PMenu *b = build_menu(i); for (int k = 0; k < b->n; k++) { PMItem *d = pm_push(s); *d = b->it[k]; } free(b->it); free(b); }
+static void main_menu(void) { PMenu *m = pm_new(); static const WCHAR *n[8] = { L"File", L"Edit", L"View", L"Go", L"Style", L"Tools", L"Computer", L"Games" }; for (int i = 0; i < 8; i++) { PMenu *s = pm_sub(m, i == 6 && C.apps_title[0] ? C.apps_title : n[i]); PMenu *b = build_menu(i); for (int k = 0; k < b->n; k++) { PMItem *d = pm_push(s); *d = b->it[k]; } free(b->it); free(b); }
     popup_at(m, LY.menu.left, LY.menu.bottom); pm_free(m); }
 static void add_ow_submenu(PMenu *m) { ow_collect(); PMenu *s = pm_sub(m, L"Open with"); for (int i = 0; i < g_now && i < 300; i++) mi(s, CMD_OW0 + i, g_ow[i].name, 0, 1); pm_sep(s); mi(s, CMD_OW_MORE, L"Choose another app...", 0, 1); }
 static void item_menu(int x, int y) {
     Tab *t = curtab(); Item *f = focus_item(t); if (!f) return; PMenu *m = pm_new(); int ns = sel_count(t, NULL); int real = f->kind != 1;
     if (!wcscmp(t->path, L"::trash")) { pm_add(m, CMD_RESTORE_TRASH, L"Restore", 0, 1); pm_add(m, CMD_DELETE_PERM, L"Delete permanently", 0, 1); pm_sep(m); pm_add(m, CMD_EMPTY_TRASH, L"Empty Recycle Bin", 0, 1); pm_add(m, CMD_PROPS, L"Properties", 0, ns == 1); popup_at(m, x, y); pm_free(m); return; }
-    if (!wcscmp(t->path, L"::games")) { pm_add(m, CMD_OPEN, L"Open save folder", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_BACKUP, L"Backup saves...", 0, 1); pm_add(m, CMD_GAME_RESTORE, L"Restore a saved backup...", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_ADDPATH, L"Add save folder/files...", 0, ns == 1); pm_add(m, CMD_RENAME, L"Rename", 0, ns == 1); pm_add(m, CMD_GAME_REMOVE, L"Remove from list", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_ADD, L"Add game...", 0, 1); pm_add(m, CMD_PROPS, L"Properties", 0, ns == 1); popup_at(m, x, y); pm_free(m); return; }
+    if (!wcscmp(t->path, L"::games")) { pm_add(m, CMD_GAME_OPENGS, L"Open .gs (Backup / Restore)", 0, ns == 1); pm_add(m, CMD_OPEN, L"Open save folder", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_BACKUP, L"Backup New Save...", 0, 1); pm_add(m, CMD_GAME_RESTORE, L"Open a .gs file...", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_ICON, L"Change game icon...", 0, ns == 1); pm_add(m, CMD_GAME_ADDPATH, L"Add save folder/files...", 0, ns == 1); pm_add(m, CMD_RENAME, L"Rename", 0, ns == 1); pm_add(m, CMD_GAME_REMOVE, L"Remove from list", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_ADD, L"Add game...", 0, 1); pm_add(m, CMD_PROPS, L"Properties", 0, ns == 1); popup_at(m, x, y); pm_free(m); return; }
     if (!wcscmp(t->path, L"::apps")) { pm_add(m, CMD_OPEN, L"Open", 0, 1); if (C.admin_menu) pm_add(m, CMD_ADMIN, L"Run as administrator", 0, 1); pm_sep(m); pm_add(m, CMD_APP_UP, L"Move up", 0, 1); pm_add(m, CMD_APP_DOWN, L"Move down", 0, 1); pm_add(m, CMD_APP_TOP, L"Move to top", 0, 1); pm_sep(m); pm_add(m, CMD_APP_REMOVE, L"Remove from this list", 0, 1);
         pm_add(m, CMD_SHORTCUT, L"Create shortcut on Desktop", 0, 1); pm_add(m, CMD_PROPS, L"Properties", 0, ns == 1); pm_sep(m); pm_add(m, CMD_APP_ADD, L"Add application...", 0, 1); pm_add(m, CMD_APP_RESET, L"Reset the list", 0, 1); popup_at(m, x, y); pm_free(m); return; } int arc = !f->dir && arc_kind_of(f->path) != ARC_NONE && !ext_in(f->path, L".docx.xlsx.pptx.");
     mi(m, CMD_OPEN, L"Open", 0, 1); if (!f->dir) mi(m, CMD_OPEN_VIEWER, L"Open in Viewer", 0, 1); if (!f->dir) add_ow_submenu(m); if (C.admin_menu && !f->dir && ext_in(f->path, L".exe.bat.cmd.msi.lnk.com.")) mi(m, CMD_ADMIN, L"Run as administrator", 0, 1); pm_sep(m);
@@ -4935,16 +5431,35 @@ static void item_menu(int x, int y) {
         PMenu *ic = pm_sub(m, L"Custom icon"); mi(ic, CMD_SETICON, L"For this item...", 0, 1); mi(ic, CMD_SETICON_EXT, L"For all files of this type...", 0, !f->dir); mi(ic, CMD_SETICON_DIR, L"For all folders...", 0, 1); pm_sep(ic); mi(ic, CMD_CLEARICON, L"Remove custom icon", 0, 1);
         pm_sep(m); mi(m, CMD_SHORTCUT, L"Create shortcut on Desktop", 0, 1); mi(m, CMD_SHORTCUT_HERE, L"Create shortcut here", 0, 1); pm_sep(m); mi(m, CMD_PROPS, L"Properties", 0, ns == 1);
     }
-    popup_at(m, x, y); pm_free(m);
+    ctx_apply(m); popup_at(m, x, y); pm_free(m);
 }
 static void blank_menu(int x, int y) {
     Tab *t = curtab(); int real = t->path[0] && !is_special(t->path); PMenu *m = pm_new(); int vm = view_mode();
     if (!wcscmp(t->path, L"::trash")) { pm_add(m, CMD_RESTORE_TRASH, L"Restore all items", 0, t->nv > 0); pm_add(m, CMD_EMPTY_TRASH, L"Empty Recycle Bin", 0, t->nv > 0); pm_sep(m); pm_add(m, CMD_REFRESH, L"Refresh", 0, 1); popup_at(m, x, y); pm_free(m); return; }
-    if (!wcscmp(t->path, L"::games")) { pm_add(m, CMD_GAME_ADD, L"Add game...", 0, 1); pm_add(m, CMD_GAME_BACKUP_ALL, L"Backup all games", 0, t->n > 0); pm_add(m, CMD_GAME_RESTORE, L"Restore a saved backup...", 0, 1); pm_sep(m); pm_add(m, CMD_REFRESH, L"Refresh", 0, 1); popup_at(m, x, y); pm_free(m); return; }
+    if (!wcscmp(t->path, L"::games")) { pm_add(m, CMD_GAME_ADD, L"Add game...", 0, 1); pm_add(m, CMD_GAME_BACKUP_ALL, L"Backup all games", 0, t->n > 0); pm_add(m, CMD_GAME_RESTORE, L"Open a .gs file...", 0, 1); pm_add(m, CMD_GS_ASSOC, L"Open .gs files with Files", 0, 1); pm_sep(m); pm_add(m, CMD_REFRESH, L"Refresh", 0, 1); popup_at(m, x, y); pm_free(m); return; }
     if (!wcscmp(t->path, L"::apps")) { pm_add(m, CMD_APP_ADD, L"Add application...", 0, 1); pm_add(m, CMD_APP_RESET, L"Reset the list", 0, 1); pm_sep(m); pm_add(m, CMD_REFRESH, L"Refresh", 0, 1); popup_at(m, x, y); pm_free(m); return; }
     PMenu *v = pm_sub(m, L"View"); mi(v, CMD_VDET, L"Details", vm == 0, 1); mi(v, CMD_VICON, L"Icons", vm == 1, 1); mi(v, CMD_VTILE, L"Tiles", vm == 2, 1); add_sort_menu(pm_sub(m, L"Sort by")); pm_sep(m);
     PMenu *nw = pm_sub(m, L"New"); mi(nw, CMD_NEWFOLDER, L"Folder", 0, real); mi(nw, CMD_NEWFILE, L"Text document", 0, real); mi(m, CMD_PASTE, L"Paste", 0, real && S.clip.n); mi(m, CMD_SELALL, L"Select all", 0, 1); pm_sep(m);
     mi(m, CMD_REFRESH, L"Refresh", 0, 1); mi(m, CMD_CMD, L"Open CMD here", 0, 1); mi(m, CMD_STYLES, L"Styles...", 0, 1); mi(m, CMD_LAYOUT_EDIT, L"Layout editor...", 0, 1); mi(m, CMD_SETTINGS, L"Settings...", 0, 1); popup_at(m, x, y); pm_free(m);
+}
+static void nav_menu(int x, int y) {
+    int ni = nav_hit(x, y); PMenu *m = pm_new(); nav_order_full(); g_nav_ctx = ni >= 0 ? S.nav[ni].blk : -1;
+    if (g_nav_ctx >= 0 && g_nav_ctx < g_nav_nk) { WCHAR l[MAX_PATH + 24]; pm_head(m, nav_key_label(g_nav_keys[g_nav_ctx])); mi(m, CMD_NAV_UP, L"Move section up", 0, g_nav_ctx > 0); mi(m, CMD_NAV_DOWN, L"Move section down", 0, g_nav_ctx < g_nav_nk - 1); mi(m, CMD_NAV_TOP, L"Move section to top", 0, g_nav_ctx > 0); mi(m, CMD_NAV_HIDE, L"Hide this section", 0, 1);
+        if (g_nav_keys[g_nav_ctx][0] == '+') mi(m, CMD_NAV_REMOVE, L"Remove from the pane", 0, 1); (void)l; pm_sep(m); }
+    mi(m, CMD_NAV_ADD, L"Add a folder to the pane...", 0, 1);
+    int nh = 0; for (int i = 0; i < C.nav_hide.n; i++) if (nav_key_index(C.nav_hide.v[i]) >= 0) nh++;
+    if (nh) { PMenu *s = pm_sub(m, L"Show hidden section"); for (int i = 0; i < C.nav_hide.n && i < 16; i++) if (nav_key_index(C.nav_hide.v[i]) >= 0) mi(s, CMD_NAV_SHOW0 + i, nav_key_label(C.nav_hide.v[i]), 0, 1); }
+    mi(m, CMD_NAV_RESET, L"Reset the pane (order and hidden)", 0, 1); popup_at(m, x, y); pm_free(m);
+}
+static void nav_cmd(int id) {
+    nav_order_full(); int c = g_nav_ctx;
+    if (id >= CMD_NAV_SHOW0 && id < CMD_NAV_SHOW0 + 16) { int i = id - CMD_NAV_SHOW0; if (i < C.nav_hide.n) sl_del(&C.nav_hide, i); }
+    else if (id == CMD_NAV_UP) nav_move_block(c, c - 1); else if (id == CMD_NAV_DOWN) nav_move_block(c, c + 1); else if (id == CMD_NAV_TOP) nav_move_block(c, 0);
+    else if (id == CMD_NAV_HIDE) { if (c >= 0 && c < g_nav_nk && sl_find(&C.nav_hide, g_nav_keys[c]) < 0) sl_add(&C.nav_hide, g_nav_keys[c]); }
+    else if (id == CMD_NAV_ADD) { WCHAR f[MAX_PATH]; if (fm_shell_pick(g_dlg_top ? g_dlg_top : S.hwnd, L"Folder to add to the navigation pane", f, 1)) { WCHAR k[MAX_PATH + 2]; int l = lstrlenW(f); while (l > 3 && f[l - 1] == '\\') f[--l] = 0; wfmt(k, MAX_PATH + 2, L"+%ls", f); if (nav_key_index(k) < 0 && g_nav_nk < 48) { scpy(g_nav_keys[g_nav_nk++], MAX_PATH, k); nav_order_store(); } } }
+    else if (id == CMD_NAV_REMOVE) { if (c >= 0 && c < g_nav_nk) { for (int i = c; i < g_nav_nk - 1; i++) scpy(g_nav_keys[i], MAX_PATH, g_nav_keys[i + 1]); g_nav_nk--; nav_order_store(); } }
+    else if (id == CMD_NAV_RESET) { sl_clear(&C.nav_order); sl_clear(&C.nav_hide); }
+    cfg_save(); g_nav_dirty = 1; redraw();
 }
 static void tab_menu(int idx, int x, int y) { g_tab_ctx = idx; PMenu *m = pm_new(); Tab *t = &S.tabs[idx]; mi(m, CMD_TABDUP, L"Duplicate tab", 0, 1); mi(m, CMD_TABPIN, t->pinned ? L"Unpin tab" : L"Pin tab", 0, 1); pm_sep(m); mi(m, CMD_TABCLOSE, L"Close tab", 0, !t->pinned); mi(m, CMD_TABOTHERS, L"Close other tabs", 0, S.ntabs > 1); popup_at(m, x, y); pm_free(m); }
 static void search_menu(void) {
@@ -4959,6 +5474,7 @@ static void apply_search_text(void);
 static void do_search_text(const WCHAR *q) { set_search_text(q); apply_search_text(); }
 static void extract_dest(int mode) {
     Tab *t = curtab(); Item *f = focus_item(t); if (!f || f->dir || arc_kind_of(f->path) == ARC_NONE) { toast(L"Select an archive first"); return; } WCHAR dest[MAX_PATH], par[MAX_PATH]; parent_of(f->path, par);
+    if (C.arc_dialogs) { extract_window(f->path, mode); return; }
     if (mode == 0) scpy(dest, MAX_PATH, par); else if (mode == 1) { WCHAR stem[MAX_PATH]; scpy(stem, MAX_PATH, base_name(f->path)); int l = lstrlenW(stem); if (l > 7 && !_wcsicmp(stem + l - 7, L".tar.gz")) stem[l - 7] = 0; else { WCHAR *e = PathFindExtensionW(stem); if (*e) *e = 0; } unique_name(par, stem, 1, dest, MAX_PATH); }
     else { BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = S.hwnd; bi.lpszTitle = L"Extract to folder"; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE; LPITEMIDLIST pl = SHBrowseForFolderW(&bi); if (!pl) return; BOOL ok = SHGetPathFromIDListW(pl, dest); CoTaskMemFree(pl); if (!ok) return; }
     start_extract(f->path, dest);
@@ -4970,12 +5486,13 @@ static void do_cmd(int id) {
     if (id >= CMD_ACCENT0 && id < CMD_ACCENT0 + 8) { if (is_win10()) scpy(C.accent, 16, FM_ACCENTS[id - CMD_ACCENT0]); else scpy(C.style_accent, 16, FM_ACCENTS[id - CMD_ACCENT0]); style_changed(); return; }
     if (id >= CMD_AUTOREM0 && id < CMD_AUTOREM0 + 40) { int i = id - CMD_AUTOREM0; if (i < C.autostart_apps.n) { sl_del(&C.autostart_apps, i); cfg_save(); } return; }
     if (id >= CMD_COLOR0 && id < CMD_COLOR0 + 12) { apply_folder_color(id - CMD_COLOR0); return; }
+    if ((id >= CMD_NAV_UP && id <= CMD_NAV_RESET) || (id >= CMD_NAV_SHOW0 && id < CMD_NAV_SHOW0 + 16)) { nav_cmd(id); return; }
     if (id >= CMD_OW0 && id < CMD_OW0 + 300) { if (f && id - CMD_OW0 < g_now) launch_with(g_ow[id - CMD_OW0].path, f->path); return; }
     if (id >= CMD_SRCH_HIST0 && id < CMD_SRCH_HIST0 + 10) { if (id - CMD_SRCH_HIST0 < C.search_hist.n) { WCHAR q[256]; scpy(q, 256, C.search_hist.v[id - CMD_SRCH_HIST0]); do_search_text(q); } return; }
     if (id >= CMD_SRCH_PIN0 && id < CMD_SRCH_PIN0 + 30) { if (id - CMD_SRCH_PIN0 < C.search_pins.n) { WCHAR q[256]; scpy(q, 256, C.search_pins.v[id - CMD_SRCH_PIN0]); do_search_text(q); } return; }
     if (id >= CMD_SRCH_EXT0 && id < CMD_SRCH_EXT0 + 8) { scpy(C.search_ext, 64, EXT_GROUPS[id - CMD_SRCH_EXT0]); cfg_save(); rebuild_view(t); redraw(); return; }
     if (id >= CMD_SRCH_UNPIN0 && id < CMD_SRCH_UNPIN0 + 30) { if (id - CMD_SRCH_UNPIN0 < C.search_pins.n) { sl_del(&C.search_pins, id - CMD_SRCH_UNPIN0); cfg_save(); } return; }
-    if (id >= CMD_TAB0 && id < CMD_TAB0 + 6) { if (C.ribbon_tab == id - CMD_TAB0 && C.ribbon_open) C.ribbon_open = 0; else { C.ribbon_tab = id - CMD_TAB0; C.ribbon_open = 1; } cfg_save(); place_edits(); redraw(); return; }
+    if (id >= CMD_TAB0 && id < CMD_TAB0 + 8) { if (C.ribbon_tab == id - CMD_TAB0 && C.ribbon_open) C.ribbon_open = 0; else { C.ribbon_tab = id - CMD_TAB0; C.ribbon_open = 1; } cfg_save(); place_edits(); redraw(); return; }
     id &= 0x3FFF;
     switch (id) {
     case CMD_NEWTAB: new_tab(NULL); break; case CMD_NEWWIN: new_tab(t->path); break; case CMD_NEWFOLDER: new_item(1); break; case CMD_NEWFILE: new_item(0); break; case CMD_CMD: open_cmd(); break; case CMD_EXIT: PostMessageW(S.hwnd, WM_CLOSE, 0, 0); break;
@@ -4983,11 +5500,11 @@ static void do_cmd(int id) {
     case CMD_RENAME: begin_rename(); break; case CMD_DELETE: do_delete(0); break; case CMD_DELETE_PERM: do_delete(1); break;
     case CMD_RESTORE_TRASH: do_restore_trash(); break; case CMD_EMPTY_TRASH: do_empty_trash(); break; case CMD_TRASH: navigate(L"::trash", 1); break; case CMD_APPS: navigate(L"::apps", 1); break;
     case CMD_OPEN_VIEWER: { Item *vf = focus_item(curtab()); if (vf && !vf->dir && vf->kind != 1) open_in_viewer(vf->path); else toast(L"Select a file first"); break; }
-    case CMD_GAMES: navigate(L"::games", 1); break; case CMD_GAME_ADD: game_add(-1); break; case CMD_GAME_BACKUP: game_backup(0); break; case CMD_GAME_BACKUP_ALL: game_backup(1); break; case CMD_GAME_RESTORE: game_restore(); break; case CMD_GAME_REMOVE: game_remove(); break;
-    case CMD_GAME_ADDPATH: { int gi[2]; if (game_pick_sel(gi, 2) == 1) game_add(gi[0]); else toast(L"Select one game first"); break; }
+    case CMD_GAMES: navigate(L"::games", 1); break; case CMD_GAME_ADD: game_add(); break; case CMD_GAME_BACKUP: game_backup(0); break; case CMD_GAME_BACKUP_ALL: game_backup(1); break; case CMD_GAME_RESTORE: game_restore(); break; case CMD_GAME_REMOVE: game_remove(); break; case CMD_GAME_OPENGS: game_open_gs(); break; case CMD_GAME_ICON: { int gi[2]; if (game_pick_sel(gi, 2) == 1) game_set_icon(gi[0]); else toast(L"Select one game first"); break; } case CMD_GS_ASSOC: gs_associate(); break;
+    case CMD_GAME_ADDPATH: { int gi[2]; if (game_pick_sel(gi, 2) == 1) game_add_paths(gi[0]); else toast(L"Select one game first"); break; }
     case CMD_APP_ADD: apps_add_dialog(); break; case CMD_APP_UP: apps_move(-1); break; case CMD_APP_DOWN: apps_move(1); break; case CMD_APP_TOP: apps_move(2); break; case CMD_APP_RESET: apps_reset(); break;
     case CMD_APP_REMOVE: do_delete(0); break;
-    case CMD_LAYOUT_EDIT: lay_set_ed(!g_ed); break; case CMD_LAYOUT_SAVE: if (!g_ed) lay_set_ed(1); lay_prompt_name(); break; case CMD_LAYOUT_RESET: lay_reset(); break; case CMD_LAYOUT_NAVSIDE: C.nav_right = !C.nav_right; lay_commit(); break;
+    case CMD_LAYOUT_EDIT: if (g_ed) lay_set_ed(0); else layout_window(); break; case CMD_LAYOUT_DRAG: lay_set_ed(!g_ed); break; case CMD_LAYOUT_SAVE: if (!g_ed) lay_set_ed(1); lay_prompt_name(); break; case CMD_LAYOUT_RESET: lay_reset(); break; case CMD_LAYOUT_NAVSIDE: C.nav_right = !C.nav_right; lay_commit(); break;
     case CMD_FIT_PAGE: pv_fit_ex(&g_pc_panel, 1); redraw(); break; case CMD_BACKUP_FULL: backup_full(0); break; case CMD_RESTORE_FULL: backup_full(1); break;
     case CMD_LOADBIG: if (fm_msgbox(L"Loading a very large file can be slow and use a lot of memory.\nLoad the preview anyway?", L"Large file", MB_YESNO | MB_ICONQUESTION) == IDYES) { g_force_big = 1; preview_update(); g_force_big = 0; redraw(); } break; case CMD_COPYPATH: copy_path_text(f); break; case CMD_PROPS: show_properties(f); break;
     case CMD_OPEN: if (sel_count(t, NULL) > 1) { for (int i = 0; i < t->nv; i++) { Item *x = &t->it[t->view[i]]; if (x->sel && !x->dir) open_item(x); } } else open_item(f); break;
@@ -5069,7 +5586,7 @@ static void on_editkey(HWND h, int act) {
 /* ---- hit regions for hover redraw keys ---- */
 static int region_at(int x, int y) {
     const RECT *rs[] = { &LY.back, &LY.fwd, &LY.up, &LY.refresh, &LY.menu, &LY.setb, &LY.cmdb, &LY.osb, &LY.sub, &LY.sdrop, &LY.ribcol, &LY.views[0], &LY.views[1], &LY.views[2], &LY.split };
-    for (int i = 0; i < 15; i++) if (in_rect(rs[i], x, y)) return i + 1; for (int i = 0; i < 3; i++) if (in_rect(&LY.capbtn[i], x, y)) return 20 + i; for (int i = 0; i < 6; i++) if (in_rect(&LY.ribtab[i], x, y)) return 30 + i;
+    for (int i = 0; i < 15; i++) if (in_rect(rs[i], x, y)) return i + 1; for (int i = 0; i < 3; i++) if (in_rect(&LY.capbtn[i], x, y)) return 20 + i; for (int i = 0; i < 8; i++) if (in_rect(&LY.ribtab[i], x, y)) return 30 + i;
     for (int i = 0; i < g_nrb; i++) if (in_rect(&g_rb[i], x, y)) return 40 + i; if (S.ntabs > 1) { for (int i = 0; i < S.ntabs; i++) if (in_rect(&g_tabr[i], x, y)) return 70 + i; if (in_rect(&g_tabplus, x, y)) return 100; }
     for (int i = 0; i < S.ncrumbs; i++) if (in_rect(&S.crumbs[i].r, x, y)) return 110 + i; return 0;
 }
@@ -5109,7 +5626,7 @@ static void on_lbutton(int x, int y, WPARAM wp) {
     if (g_ed) { lay_down(x, y); SetCapture(S.hwnd); return; }
     for (int k = 0; k < g_nlr; k++) if (in_rect(&g_lrect[k], x, y)) { WCHAR id[4]; wfmt(id, 4, L"L%d", k); LOv *o = lay_find(id, 0); if (o && o->path[0]) { Item tmp; memset(&tmp, 0, sizeof tmp); scpy(tmp.path, MAX_PATH, o->path); scpy(tmp.name, 256, base_name(o->path)); tmp.dir = dir_exists(o->path); open_item(&tmp); return; } }
     for (int i = 0; i < 3; i++) if (in_rect(&LY.capbtn[i], x, y)) { cap_action(i); return; }
-    for (int i = 0; i < 6; i++) if (in_rect(&LY.ribtab[i], x, y)) { do_cmd(CMD_TAB0 + i); return; } if (in_rect(&LY.ribcol, x, y)) { do_cmd(CMD_RIBBON); return; }
+    for (int i = 0; i < 8; i++) if (in_rect(&LY.ribtab[i], x, y)) { do_cmd(CMD_TAB0 + i); return; } if (in_rect(&LY.ribcol, x, y)) { do_cmd(CMD_RIBBON); return; }
     if (LY.has_strip && in_rect(&LY.strip, x, y)) { for (int i = 0; i < g_nrb; i++) if (in_rect(&g_rb[i], x, y)) { ribbon_click(i); return; } return; }
     if (in_rect(&LY.back, x, y)) { go_back(); return; } if (in_rect(&LY.fwd, x, y)) { go_fwd(); return; } if (in_rect(&LY.up, x, y)) { go_up(); return; } if (in_rect(&LY.refresh, x, y)) { g_nav_dirty = 1; reload(1); return; }
     if (in_rect(&LY.menu, x, y)) { main_menu(); return; } if (in_rect(&LY.setb, x, y)) { do_cmd(CMD_SETTINGS); return; } if (in_rect(&LY.cmdb, x, y)) { open_cmd(); return; } if (in_rect(&LY.osb, x, y)) { do_cmd(CMD_OSNEXT); return; }
@@ -5120,7 +5637,9 @@ static void on_lbutton(int x, int y, WPARAM wp) {
     if (LY.split.right > LY.split.left && in_rect(&LY.split, x, y)) { g_splitdrag = 1; SetCapture(S.hwnd); return; }
     if (in_rect(&LY.nav, x, y)) { int i = nav_hit(x, y); if (i < 0) return; NavEnt *e = &S.nav[i];
         if (e->root && x < LY.nav.left + px(22) && e->sect < 4) { S.nav_open[e->sect] = !S.nav_open[e->sect]; nav_rebuild(); redraw(); return; }
-        if (!e->root && e->exp >= 0 && nav_arrow_hit(e, x)) { nav_toggle(i); return; } WCHAR p[MAX_PATH]; scpy(p, MAX_PATH, e->path); navigate(p, 1); return; }
+        if (!e->root && e->exp >= 0 && nav_arrow_hit(e, x)) { nav_toggle(i); return; }
+        if (e->root || e->sect == 7) { g_navd_pend = i; g_navd_x = x; g_navd_y = y; SetCapture(S.hwnd); return; }
+        WCHAR p[MAX_PATH]; scpy(p, MAX_PATH, e->path); navigate(p, 1); return; }
     if (LY.preview.right > LY.preview.left && in_rect(&LY.preview, x, y)) { POINT pt = { x, y }; ClientToScreen(S.hwnd, &pt); if (pv_click(&g_pc_panel, x, y, pt.x, pt.y + px(20))) { if (g_pc_panel.selecting || g_pc_panel.dragv || g_pc_panel.dragh) { g_pvcap = 1; SetCapture(S.hwnd); } redraw(); } return; }
     if (view_mode() == 0 && in_rect(&LY.hdr, x, y)) { click_header(x); return; }
     if (in_rect(&LY.sb, x, y)) { int th = total_h(), vh = LY.sb.bottom - LY.sb.top; if (th <= vh) return; int tl = vh * vh / th; if (tl < px(24)) tl = px(24); int rng = vh - tl, mx = th - vh, ty = LY.sb.top + (int)((double)t->scroll / mx * rng);
@@ -5136,6 +5655,9 @@ static void on_lbuttonup(int x, int y) {
     Tab *t = curtab(); int was = 0; if (g_ed) { lay_up(); ReleaseCapture(); return; }
     if (S.dragsb) { S.dragsb = 0; was = 1; } if (g_splitdrag) { g_splitdrag = 0; cfg_save(); was = 1; }
     if (g_pvcap) { g_pvcap = 0; pv_up(&g_pc_panel); was = 1; }
+    if (g_navd_pend >= 0 || g_navd) { int pend = g_navd_pend, dragged = g_navd, drop = g_navd_drop, after = g_navd_after; g_navd_pend = -1; g_navd = 0; g_navd_drop = -1; ReleaseCapture();
+        if (dragged) { if (pend >= 0 && pend < S.nnav && drop >= 0) { int from = S.nav[pend].blk; int to = after ? (drop > from ? drop : drop + 1) : (drop > from ? drop - 1 : drop); if (to < 0) to = 0; if (to >= g_nav_nk) to = g_nav_nk - 1; nav_move_block(from, to); } nav_rebuild(); redraw(); return; }
+        if (pend >= 0 && pend < S.nnav) { WCHAR p[MAX_PATH]; scpy(p, MAX_PATH, S.nav[pend].path); navigate(p, 1); } return; }
     if (g_in.rb_on) { g_in.rb_on = 0; free(g_rbbase); g_rbbase = NULL; was = 1; int f = -1; for (int i = 0; i < t->nv; i++) if (t->it[t->view[i]].sel) { f = i; break; } t->focus = f; t->anchor = f; preview_update(); }
     if (g_in.dragging) { g_in.dragging = 0; was = 1; do_drop(GetKeyState(VK_CONTROL) < 0); g_in.drop_item = g_in.drop_nav = -1; }
     else if (g_in.drag_pend) { g_in.drag_pend = 0; was = 1; if (g_defer_vi >= 0) sel_view(g_defer_vi, 0, 0); }
@@ -5143,6 +5665,8 @@ static void on_lbuttonup(int x, int y) {
 }
 static void on_mousemove(int x, int y, WPARAM wp) {
     Tab *t = curtab(); if (g_ed) { lay_move(x, y); return; }
+    if (g_navd_pend >= 0) { if (!g_navd && (abs(x - g_navd_x) > px(6) || abs(y - g_navd_y) > px(6))) g_navd = 1;
+        if (g_navd) { int ni = nav_hit(x, y); g_navd_drop = -1; if (ni >= 0) { NavEnt *e = &S.nav[ni]; int rh = px(cur_style()->nav_row); int ry = LY.nav.top + px(4) - S.nav_scroll + ni * rh; g_navd_drop = e->blk; g_navd_after = y > ry + rh / 2 && (ni == S.nnav - 1 || S.nav[ni + 1].blk != e->blk); if (!g_navd_after && ni > 0 && S.nav[ni - 1].blk == e->blk) g_navd_drop = e->blk; if (g_navd_drop == S.nav[g_navd_pend].blk) g_navd_drop = -1; } redraw(); } return; }
     if (g_splitdrag) { int W = C.nav_right ? LY.nav.left : LY.status.right; C.preview_width = (int)((W - x) / C.scale); if (C.preview_width < 160) C.preview_width = 160; g_pv_override = 1; place_edits(); redraw(); return; }
     if (g_pvcap) { pv_move(&g_pc_panel, x, y); return; } if (S.dragsb) { sb_drag_to(y); return; }
     if (g_in.rb_on) { rubber_update(x, y, (wp & MK_CONTROL) != 0); return; }
@@ -5182,7 +5706,7 @@ static LRESULT hit_test(int sx, int sy) {
     RECT wr; GetWindowRect(S.hwnd, &wr); int x = sx - wr.left, y = sy - wr.top, W = wr.right - wr.left, H = wr.bottom - wr.top; int b = px(6);
     if (!g_maxed && !IsZoomed(S.hwnd)) { int l = x < b, r = x >= W - b, tp = y < b, bt = y >= H - b; if (tp && l) return HTTOPLEFT; if (tp && r) return HTTOPRIGHT; if (bt && l) return HTBOTTOMLEFT; if (bt && r) return HTBOTTOMRIGHT; if (l) return HTLEFT; if (r) return HTRIGHT; if (tp) return HTTOP; if (bt) return HTBOTTOM; }
     for (int i = 0; i < 3; i++) if (in_rect(&LY.capbtn[i], x, y)) return HTCLIENT; if (y < LY.caption.bottom) return HTCAPTION;
-    if (y >= LY.ribtabs.top && y < LY.ribtabs.bottom) { int hit = 0; for (int i = 0; i < 6; i++) if (in_rect(&LY.ribtab[i], x, y)) hit = 1; if (in_rect(&LY.ribcol, x, y)) hit = 1; if (!hit) return HTCAPTION; }   /* empty ribbon-tab strip drags the window */
+    if (y >= LY.ribtabs.top && y < LY.ribtabs.bottom) { int hit = 0; for (int i = 0; i < 8; i++) if (in_rect(&LY.ribtab[i], x, y)) hit = 1; if (in_rect(&LY.ribcol, x, y)) hit = 1; if (!hit) return HTCAPTION; }   /* empty ribbon-tab strip drags the window */
     if (S.ntabs > 1 && y >= LY.tabs.top && y < LY.tabs.bottom && x > g_tabplus.right + px(12)) return HTCAPTION;
     return HTCLIENT;
 }
@@ -5203,7 +5727,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SYSCOMMAND: if ((wp & 0xFFF0) == SC_RESTORE || (wp & 0xFFF0) == SC_MAXIMIZE) g_dirty = 1; break;
     case WM_CTLCOLOREDIT: SetTextColor((HDC)wp, S.pal.text); SetBkColor((HDC)wp, S.pal.input); return (LRESULT)S.br_input;
     case WM_COMMAND: if ((HWND)lp == S.e_search && HIWORD(wp) == EN_CHANGE) { if (!S.noevent) SetTimer(h, TIMER_SEARCH, 400, NULL); return 0; } if (!lp) { int id = LOWORD(wp); if (id == PB_PLAY + 5000) { vid_toggle(); redraw(); } else do_cmd(id); } return 0;
-    case WM_APP_EDITKEY: on_editkey((HWND)wp, (int)lp); return 0; case WM_APP_REFRESH: redraw(); return 0; case WM_APP_ASK: { AskReq *a = (AskReq *)lp; a->result = fm_msgbox(a->text, a->title, a->flags); return 0; }
+    case WM_APP_EDITKEY: on_editkey((HWND)wp, (int)lp); return 0; case WM_APP_REFRESH: redraw(); return 0; case WM_APP_ASK: { AskReq *a = (AskReq *)lp; if (a->kind == 1) a->result = conflict_dialog(a->text, a->o, a->n, a->remaining, &a->apply); else a->result = fm_msgbox(a->text, a->title, a->flags); return 0; }
     case WM_APP_TASKDONE: InterlockedExchange(&S.busy, 0); reload(1); toast(S.status_msg); return 0;
     case WM_APP + 9: show_about(); return 0;
     case WM_TIMER:
@@ -5214,15 +5738,16 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONDOWN: on_lbutton(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), wp); return 0;
     case WM_LBUTTONUP: on_lbuttonup(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
-    case WM_CAPTURECHANGED: if ((HWND)lp != h && (g_in.rb_on || g_in.dragging || g_in.drag_pend)) { g_in.rb_on = g_in.dragging = g_in.drag_pend = 0; redraw(); } return 0;
+    case WM_CAPTURECHANGED: if ((HWND)lp != h && (g_in.rb_on || g_in.dragging || g_in.drag_pend || g_navd_pend >= 0)) { g_in.rb_on = g_in.dragging = g_in.drag_pend = 0; g_navd_pend = -1; g_navd = 0; g_navd_drop = -1; redraw(); } return 0;
     case WM_LBUTTONDBLCLK: { int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); if (in_rect(&LY.caption, x, y) || g_ed) return 0; int vi = hit_item(x, y); if (in_rect(&LY.nav, x, y)) { int ni = nav_hit(x, y); if (ni >= 0 && S.nav[ni].exp >= 0 && !S.nav[ni].root) nav_toggle(ni); return 0; } if (vi >= 0) { sel_view(vi, 0, 0); open_item(focus_item(curtab())); } else if (C.dbl_up && in_rect(&LY.body, x, y) && g_pv.kind != PK_NONE + 99) { go_up(); } else if (view_mode() == 0 && in_rect(&LY.hdr, x, y)) click_header(x); else if (in_rect(&LY.preview, x, y) && g_pv.kind >= PK_TEXT && !in_rect(&g_pc_panel.hdr, x, y)) pv_open_full(); return 0; }
     case WM_RBUTTONDOWN: { int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); SetFocus(h); if (g_ed) { lay_context(x, y); return 0; } int vi = hit_item(x, y); if (vi >= 0 && !curtab()->it[curtab()->view[vi]].sel) sel_view(vi, 0, 0); else if (vi >= 0) curtab()->focus = vi;
         if (S.ntabs > 1 && y >= LY.tabs.top && y < LY.tabs.bottom) { for (int i = 0; i < S.ntabs; i++) if (in_rect(&g_tabr[i], x, y)) { tab_menu(i, x, y); return 0; } }
         else if (in_rect(&LY.ribtabs, x, y) || in_rect(&LY.strip, x, y)) { PMenu *m = pm_new(); mi(m, CMD_RIBBON, L"Show command strip", C.ribbon_open, 1); popup_at(m, x, y); pm_free(m); }
+        else if (in_rect(&LY.nav, x, y)) { nav_menu(x, y); }
         else if (vi >= 0) item_menu(x, y); else if (in_rect(&LY.body, x, y)) { sel_clear(curtab()); preview_update(); redraw(); blank_menu(x, y); } return 0; }
     case WM_MBUTTONUP: { int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); if (S.ntabs > 1 && y >= LY.tabs.top && y < LY.tabs.bottom) for (int i = 0; i < S.ntabs; i++) if (in_rect(&g_tabr[i], x, y)) { close_tab(i); break; } return 0; }
     case WM_MOUSEMOVE: { static unsigned hk; int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); g_mx = x; g_my = y; TRACKMOUSEEVENT te = { sizeof te, TME_LEAVE, h, 0 }; TrackMouseEvent(&te);
-        if (g_splitdrag || g_pvcap || S.dragsb || g_in.rb_on || g_in.drag_pend || g_in.dragging) { on_mousemove(x, y, wp); return 0; }
+        if (g_navd_pend >= 0 || g_splitdrag || g_pvcap || S.dragsb || g_in.rb_on || g_in.drag_pend || g_in.dragging) { on_mousemove(x, y, wp); return 0; }
         int ni = nav_hit(x, y); if (!in_rect(&LY.nav, x, y)) ni = -1; S.hover_nav = ni; unsigned k = (unsigned)region_at(x, y) * 1000003u + (unsigned)(hit_item(x, y) + 1) * 131u + (unsigned)(ni + 1);
         if (in_rect(&LY.preview, x, y) && g_pv.kind != PK_NONE) { for (int i = 0; i < g_pc_panel.nb; i++) if (in_rect(&g_pc_panel.b[i].r, x, y)) k = k * 31 + i + 1; }
         if (g_pv.kind == PK_MEDIA && in_rect(&g_pc_panel.mc, x, y)) k = k * 7 + (unsigned)(x / px(12)); if (C.checkboxes) { int vi = hit_item(x, y); if (vi >= 0) { RECT cb = check_rect(vi); if (in_rect(&cb, x, y)) k ^= 0x5bd1e995u; } }
@@ -5234,7 +5759,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (GetKeyState(VK_CONTROL) < 0 && view_mode() == 1) { do_cmd(d > 0 ? CMD_ICON_PLUS : CMD_ICON_MINUS); return 0; } if (GetKeyState(VK_CONTROL) < 0) { do_cmd(d > 0 ? CMD_ZOOM_IN : CMD_ZOOM_OUT); return 0; } scroll_by(-d * px(cur_style()->row_h) * 3 / 120); return 0; }
     case WM_KEYDOWN: if (LY.preview.right > LY.preview.left && in_rect(&LY.preview, g_mx, g_my) && g_pv.npg && (wp == VK_OEM_PLUS || wp == VK_OEM_MINUS)) { pv_key(&g_pc_panel, wp); return 0; } on_key(wp); return 0;
     case WM_SYSKEYDOWN: if (wp == VK_LEFT || wp == VK_RIGHT || wp == VK_RETURN) { on_key(wp); return 0; } break; case WM_CHAR: on_char((WCHAR)wp); return 0; case WM_SETFOCUS: return 0;
-    case WM_COPYDATA: { COPYDATASTRUCT *cd = (COPYDATASTRUCT *)lp; if (cd && cd->lpData && cd->cbData >= 2) new_tab((const WCHAR *)cd->lpData); if (IsIconic(h)) ShowWindow(h, SW_RESTORE); SetForegroundWindow(h); return TRUE; }
+    case WM_COPYDATA: { COPYDATASTRUCT *cd = (COPYDATASTRUCT *)lp; if (cd && cd->lpData && cd->cbData >= 2) { const WCHAR *cp = (const WCHAR *)cd->lpData; if (ext_in(cp, L".gs.") && !dir_exists(cp)) { scpy(g_gs_pending, MAX_PATH, cp); PostMessageW(h, WM_APP + 31, 0, 0); } else new_tab(cp); } if (IsIconic(h)) ShowWindow(h, SW_RESTORE); SetForegroundWindow(h); return TRUE; }
+    case WM_APP + 31: if (g_gs_pending[0]) { WCHAR gp[MAX_PATH]; scpy(gp, MAX_PATH, g_gs_pending); g_gs_pending[0] = 0; gs_open(gp); } return 0;
     case WM_CLOSE: pv_close_full(); vid_close(); save_session(); DestroyWindow(h); return 0;
     case WM_DESTROY: cancel_search(); bb_free(); PostQuitMessage(0); return 0;
     }
@@ -5242,7 +5768,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show) {
     (void)hp; (void)cmd; log_init(); detect_wine(); fm_log("Files (C) starting - Wine=%d", ON_WINE); CoInitialize(NULL);
-    int argc = 0; WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc); WCHAR open_path[MAX_PATH] = L"";
+    int argc = 0; WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc); WCHAR open_path[MAX_PATH] = L"", gs_start[MAX_PATH] = L"";
     for (int i = 1; i < argc; i++) { if (!wcscmp(argv[i], L"--open") && i + 1 < argc) scpy(open_path, MAX_PATH, argv[++i]); else if (argv[i][0] != '-' && !open_path[0]) scpy(open_path, MAX_PATH, argv[i]); }
     for (int i = 1; i < argc; i++) if (!wcscmp(argv[i], L"--safe")) g_safe = 1;
 #ifdef VIEWER_EXE
@@ -5256,13 +5782,14 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show) {
     cfg_init_paths(); cfg_load(); lay_load_cur(); gdip_start(); doc_fonts_load(); pm_register();
     WNDCLASSEXW wc; memset(&wc, 0, sizeof wc); wc.cbSize = sizeof wc; wc.style = CS_DBLCLKS; wc.lpfnWndProc = wndproc; wc.hInstance = hi; wc.hCursor = LoadCursorW(NULL, IDC_ARROW); wc.lpszClassName = g_viewer ? L"WinShellFM.ViewerHost" : FM_CLASS;
     wc.hIcon = (HICON)LoadImageW(hi, MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE); if (!wc.hIcon) wc.hIcon = LoadIconW(NULL, IDI_APPLICATION); wc.hIconSm = wc.hIcon; RegisterClassExW(&wc);
+    if (!g_viewer && open_path[0] && ext_in(open_path, L".gs.") && !dir_exists(open_path)) { scpy(gs_start, MAX_PATH, open_path); open_path[0] = 0; }
     int x = CW_USEDEFAULT, y = CW_USEDEFAULT; if (C.window_x != CFG_UNSET && C.window_y != CFG_UNSET) { int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN); if (C.window_x > -C.window_w + 100 && C.window_x < sw - 100 && C.window_y > -20 && C.window_y < sh - 100) { x = C.window_x; y = C.window_y; } }
     HWND w = CreateWindowExW(WS_EX_APPWINDOW, g_viewer ? L"WinShellFM.ViewerHost" : FM_CLASS, L"Files(Winlator/Wine)", WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, x, y, C.window_w, C.window_h, NULL, NULL, hi, NULL);
     if (!w) { fm_log("CreateWindow failed %lu", GetLastError()); return 1; } update_pal(); apply_fonts(); int restored = 0;
     if (!open_path[0] && C.restore_session && C.session_tabs.n) { for (int i = 0; i < C.session_tabs.n && S.ntabs < FM_MAXTABS; i++) { const WCHAR *p = C.session_tabs.v[i]; if (p[0] && !is_special(p) && !dir_exists(p)) continue; tab_init(&S.tabs[S.ntabs], p); S.tabs[S.ntabs].pinned = sl_find(&C.pinned_tabs, p) >= 0; S.ntabs++; } if (S.ntabs) { restored = 1; S.cur = C.session_cur >= 0 && C.session_cur < S.ntabs ? C.session_cur : 0; } }
     if (!restored) { WCHAR p[MAX_PATH]; scpy(p, MAX_PATH, open_path[0] ? open_path : C.last_dir); if (p[0]) norm_path(p); if (p[0] && !dir_exists(p)) p[0] = 0; if (!p[0]) scpy(p, MAX_PATH, L"::quick"); tab_init(&S.tabs[0], p); S.ntabs = 1; S.cur = 0; } else if (open_path[0]) new_tab(open_path);
     set_search_text(curtab()->filter); reload(0); set_title(); place_edits(); if (!g_viewer) { SetTimer(w, TIMER_UI, 250, NULL); SetTimer(w, TIMER_NAV, 2000, NULL); }
-    if (g_viewer) viewer_start(); else { ShowWindow(w, show); UpdateWindow(w); run_autostart(0); }
+    if (g_viewer) viewer_start(); else { ShowWindow(w, show); UpdateWindow(w); run_autostart(0); if (gs_start[0]) { scpy(g_gs_pending, MAX_PATH, gs_start); PostMessageW(w, WM_APP + 31, 0, 0); } }
     if (!g_viewer) { int td = today_days(); if (C.about_day <= 0 || td - C.about_day >= 30) { C.about_day = td; cfg_save(); PostMessageW(w, WM_APP + 9, 0, 0); } }
     fm_log("Files ready"); MSG m; while (GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); } CloseHandle(mtx); return (int)m.wParam;
 }
