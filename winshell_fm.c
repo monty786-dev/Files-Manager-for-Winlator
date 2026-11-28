@@ -514,8 +514,8 @@ static int zw_finish(ZW *z) {
 
 /* ---- document model shared by every format ---- */
 enum { B_PARA, B_H1, B_H2, B_H3, B_LIST, B_ROW, B_CELL, B_SHAPE, B_ABS, B_PAGEBREAK, B_TITLE, B_IMG };
-typedef struct { int kind, row, col, bold; double x, y, w, h, size; char *text; } DBlock;
-typedef struct { DBlock *b; int n, cap; char title[160]; double pw, ph; int ncols; } DPage;
+typedef struct { int kind, row, col, bold; double x, y, w, h, size; char *text; u8 *img; size_t ilen; u32 fill, line; int hasfill, hasline, geom; double lw; } DBlock;
+typedef struct { DBlock *b; int n, cap; char title[160]; double pw, ph; int ncols; u32 bg; int hasbg; } DPage;
 enum { DOC_NONE, DOC_FLOW, DOC_SHEETS, DOC_SLIDES, DOC_PDF };
 typedef struct { int kind; DPage *pg; int npg, cap; char err[160]; } Doc;
 static DPage *doc_newpage(Doc *d, const char *title) {
@@ -527,7 +527,7 @@ static DBlock *page_add(DPage *p, int kind, const char *text, size_t len) {
     DBlock *b = &p->b[p->n++]; memset(b, 0, sizeof *b); b->kind = kind; b->text = (char *)malloc(len + 1); if (len) memcpy(b->text, text, len); b->text[len] = 0; return b;
 }
 static void doc_free(Doc *d) {
-    for (int i = 0; i < d->npg; i++) { for (int k = 0; k < d->pg[i].n; k++) free(d->pg[i].b[k].text); free(d->pg[i].b); }
+    for (int i = 0; i < d->npg; i++) { for (int k = 0; k < d->pg[i].n; k++) { free(d->pg[i].b[k].text); free(d->pg[i].b[k].img); } free(d->pg[i].b); }
     free(d->pg); memset(d, 0, sizeof *d);
 }
 
@@ -587,6 +587,58 @@ static int zip_part(FArc *a, const char *name, u8 **buf, size_t *n) {
 }
 static char *fm_strdup(const char *s) { size_t l = strlen(s); char *p = (char *)malloc(l + 1); memcpy(p, s, l + 1); return p; }
 
+/* ---- OOXML helpers: relationships, theme colours, colour modifiers ---- */
+static u64 g_doc_img_bytes;                      /* budget for embedded pictures loaded into one document */
+typedef struct { char id[24]; char target[220]; } Rel;
+static int rels_load(FArc *a, const char *relname, Rel *out, int max) {
+    u8 *buf; size_t n; int c = 0; if (zip_part(a, relname, &buf, &n)) return 0;
+    XP x = { (const char *)buf, (const char *)buf + n }; XEv e;
+    while (c < max && xml_next(&x, &e)) if (e.kind == 1 && !strcmp(e.name, "Relationship")) { if (xml_attr(&e, "Id", out[c].id, 24) && xml_attr(&e, "Target", out[c].target, 220)) c++; }
+    free(buf); return c;
+}
+static int rel_find(const Rel *r, int n, const char *id) { for (int i = 0; i < n; i++) if (!strcmp(r[i].id, id)) return i; return -1; }
+static void part_resolve(const char *base, const char *target, char *out, size_t cap) {
+    char tmp[600]; if (target[0] == '/') snprintf(tmp, sizeof tmp, "%s", target + 1); else snprintf(tmp, sizeof tmp, "%s%s", base, target);
+    char *seg[48]; int ns = 0; char *p = tmp;
+    while (*p) { char *s = p; while (*p && *p != '/') p++; int last = (*p == 0); if (*p) *p++ = 0; if (!strcmp(s, "..")) { if (ns) ns--; } else if (strcmp(s, ".") && *s && ns < 48) seg[ns++] = s; if (last) break; }
+    out[0] = 0; for (int i = 0; i < ns; i++) { size_t l = strlen(out); snprintf(out + l, cap - l, "%s%s", i ? "/" : "", seg[i]); }
+}
+static void part_image(FArc *a, const Rel *rel, int nrel, const char *base, const char *rid, DBlock *b) {
+    int ri = rel_find(rel, nrel, rid); if (ri < 0) return; char pn[300]; part_resolve(base, rel[ri].target, pn, sizeof pn);
+    int i = zip_find(a, pn); if (i < 0 || a->e[i].size > (16u << 20) || g_doc_img_bytes + a->e[i].size > (120u << 20)) return;
+    u8 *buf; size_t n; if (zip_read_entry(a, i, &buf, &n, 16u << 20)) return; g_doc_img_bytes += n; b->img = buf; b->ilen = n;
+}
+static const char *g_thn[12] = { "dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink" };
+static void theme_load(FArc *a, u32 *tc) {
+    static const u32 df[12] = { 0x000000, 0xFFFFFF, 0x44546A, 0xE7E6E6, 0x4472C4, 0xED7D31, 0xA5A5A5, 0xFFC000, 0x5B9BD5, 0x70AD47, 0x0563C1, 0x954F72 };
+    for (int i = 0; i < 12; i++) tc[i] = df[i]; u8 *buf; size_t n; if (zip_part(a, "ppt/theme/theme1.xml", &buf, &n)) return;
+    XP x = { (const char *)buf, (const char *)buf + n }; XEv e; int cur = -1;
+    while (xml_next(&x, &e)) {
+        if (e.kind == 1 && !strncmp(e.name, "a:", 2)) { const char *nm = e.name + 2; int hit = -1; for (int i = 0; i < 12; i++) if (!strcmp(nm, g_thn[i])) hit = i;
+            if (!strcmp(nm, "fontScheme")) break;
+            if (hit >= 0 && !e.selfclose) cur = hit; else if (cur >= 0 && (!strcmp(nm, "srgbClr") || !strcmp(nm, "sysClr"))) { char v[16]; if (xml_attr(&e, !strcmp(nm, "srgbClr") ? "val" : "lastClr", v, 16)) tc[cur] = (u32)strtoul(v, NULL, 16); } }
+        else if (e.kind == 2 && cur >= 0 && !strncmp(e.name, "a:", 2) && !strcmp(e.name + 2, g_thn[cur])) cur = -1;
+    }
+    free(buf);
+}
+static int scheme_idx(const char *s) {
+    if (!strcmp(s, "tx1") || !strcmp(s, "dk1")) return 0; if (!strcmp(s, "bg1") || !strcmp(s, "lt1")) return 1; if (!strcmp(s, "tx2") || !strcmp(s, "dk2")) return 2; if (!strcmp(s, "bg2") || !strcmp(s, "lt2")) return 3;
+    if (!strncmp(s, "accent", 6) && s[6] >= '1' && s[6] <= '6') return 3 + (s[6] - '0'); if (!strcmp(s, "hlink")) return 10; if (!strcmp(s, "folHlink")) return 11; return -1;
+}
+static double hue2(double p, double q, double t) { if (t < 0) t += 1; if (t > 1) t -= 1; if (t < 1.0 / 6) return p + (q - p) * 6 * t; if (t < 0.5) return q; if (t < 2.0 / 3) return p + (q - p) * (2.0 / 3 - t) * 6; return p; }
+static u32 clr_lum(u32 c, double mod, double off) {
+    if (mod == 1.0 && off == 0.0) return c;
+    double r = ((c >> 16) & 255) / 255.0, g = ((c >> 8) & 255) / 255.0, b = (c & 255) / 255.0, mx = r > g ? (r > b ? r : b) : (g > b ? g : b), mn = r < g ? (r < b ? r : b) : (g < b ? g : b), l = (mx + mn) / 2, h = 0, s = 0, d = mx - mn;
+    if (d > 1e-9) { s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn); if (mx == r) h = (g - b) / d + (g < b ? 6 : 0); else if (mx == g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h /= 6; }
+    l = l * mod + off; if (l < 0) l = 0; if (l > 1) l = 1; double q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q, rr, gg, bb;
+    if (s < 1e-9) rr = gg = bb = l; else { rr = hue2(p, q, h + 1.0 / 3); gg = hue2(p, q, h); bb = hue2(p, q, h - 1.0 / 3); }
+    return ((u32)(rr * 255 + 0.5) << 16) | ((u32)(gg * 255 + 0.5) << 8) | (u32)(bb * 255 + 0.5);
+}
+static int geom_code(const char *p) {
+    if (!strcmp(p, "ellipse")) return 1; if (!strncmp(p, "round", 5) || !strncmp(p, "snip", 4)) return 2; if (!strcmp(p, "triangle") || !strcmp(p, "rtTriangle")) return 3;
+    if (!strcmp(p, "line") || !strncmp(p, "straightConnector", 17) || !strncmp(p, "bentConnector", 13) || !strncmp(p, "curvedConnector", 15)) return 4; if (!strcmp(p, "diamond")) return 5; return 0;
+}
+
 /* ==========================================================================
    DOCX
    ========================================================================== */
@@ -597,10 +649,15 @@ static int docx_load(FArc *a, Doc *d) {
     u8 *buf; size_t n; if (zip_part(a, "word/document.xml", &buf, &n)) return -1;
     d->kind = DOC_FLOW; DPage *pg = doc_newpage(d, "Page 1");
     XP x = { (const char *)buf, (const char *)buf + n }; XEv e; CBuf para = { 0 }, row = { 0 };
-    int in_t = 0, level = 0, list = 0, intbl = 0, bold = 0, cellcount = 0, pb_before = 0, inp = 0;
+    int in_t = 0, level = 0, list = 0, intbl = 0, bold = 0, cellcount = 0, pb_before = 0, inp = 0, in_draw = 0; double ew = 0, eh = 0; char blip[24]; blip[0] = 0; g_doc_img_bytes = 0;
+    Rel drel[128]; int ndrel = rels_load(a, "word/_rels/document.xml.rels", drel, 128);
     while (xml_next(&x, &e)) {
         if (e.kind == 1) {
-            if (!strcmp(e.name, "w:p")) { inp = 1; para.n = 0; level = 0; list = 0; bold = 0; pb_before = 0; if (para.s) para.s[0] = 0; }
+            if (!strcmp(e.name, "w:drawing") || !strcmp(e.name, "w:pict")) { in_draw = !e.selfclose; ew = eh = 0; blip[0] = 0; }
+            else if (in_draw && !strcmp(e.name, "wp:extent")) { char q[32]; if (xml_attr(&e, "cx", q, 32)) ew = atof(q) / 12700.0; if (xml_attr(&e, "cy", q, 32)) eh = atof(q) / 12700.0; }
+            else if (in_draw && !strcmp(e.name, "a:blip")) xml_attr(&e, "r:embed", blip, 24);
+            else if (in_draw && !strcmp(e.name, "v:imagedata")) xml_attr(&e, "r:id", blip, 24);
+            else if (!strcmp(e.name, "w:p")) { inp = 1; para.n = 0; level = 0; list = 0; bold = 0; pb_before = 0; if (para.s) para.s[0] = 0; }
             else if (!strcmp(e.name, "w:t")) in_t = e.selfclose ? 0 : 1;
             else if (!strcmp(e.name, "w:tab") && inp) cb_addc(&para, '\t');
             else if ((!strcmp(e.name, "w:br") || !strcmp(e.name, "w:cr")) && inp) {
@@ -620,6 +677,9 @@ static int docx_load(FArc *a, Doc *d) {
             if (pb_before && pg->n && !intbl) { char tt[32]; snprintf(tt, sizeof tt, "Page %d", d->npg + 1); pg = doc_newpage(d, tt); pb_before = 0; }
         } else if (e.kind == 2) {
             if (!strcmp(e.name, "w:t")) in_t = 0;
+            else if ((!strcmp(e.name, "w:drawing") || !strcmp(e.name, "w:pict")) && in_draw) {
+                in_draw = 0; if (!intbl && blip[0]) { if (para.n) para_flush(pg, &para, list ? B_LIST : B_PARA, 0); DBlock *b = page_add(pg, B_IMG, "[picture]", 9); b->w = ew; b->h = eh; part_image(a, drel, ndrel, "word/", blip, b); }
+            }
             else if (!strcmp(e.name, "w:p")) {
                 inp = 0;
                 if (intbl) { if (para.n) { if (row.n && row.s[row.n - 1] != '\t') cb_addc(&row, ' '); cb_add(&row, para.s, para.n); } }
@@ -708,36 +768,90 @@ static int xlsx_load(FArc *a, Doc *d) {
    PPTX
    ========================================================================== */
 static int pptx_slide_num(const char *name) { return atoi(name + 16); }
+typedef struct { double tx, ty, sx, sy; } GXf;
 static int pptx_load(FArc *a, Doc *d) {
-    d->kind = DOC_SLIDES; int idx[500], ns = 0;
+    d->kind = DOC_SLIDES; int idx[500], ns = 0; g_doc_img_bytes = 0;
     for (int i = 0; i < a->n && ns < 500; i++) { const char *nm = a->e[i].name; size_t l = strlen(nm); if (!strncmp(nm, "ppt/slides/slide", 16) && l > 4 && !strcmp(nm + l - 4, ".xml")) idx[ns++] = i; }
     for (int i = 0; i < ns; i++) for (int j = i + 1; j < ns; j++) if (pptx_slide_num(a->e[idx[j]].name) < pptx_slide_num(a->e[idx[i]].name)) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
-    double SW = 12192000.0, SH = 6858000.0; u8 *buf; size_t n;
+    double SW = 12192000.0, SH = 6858000.0; u8 *buf; size_t n; u32 tc[12]; theme_load(a, tc);
     if (!zip_part(a, "ppt/presentation.xml", &buf, &n)) { XP x = { (const char *)buf, (const char *)buf + n }; XEv e; while (xml_next(&x, &e)) if (e.kind == 1 && !strcmp(e.name, "p:sldSz")) { char v[32]; if (xml_attr(&e, "cx", v, 32)) SW = atof(v); if (xml_attr(&e, "cy", v, 32)) SH = atof(v); break; } free(buf); }
     if (SW < 1 || SH < 1) { SW = 12192000.0; SH = 6858000.0; }
     for (int s = 0; s < ns; s++) {
         char title[32]; snprintf(title, sizeof title, "Slide %d", s + 1); DPage *pg = doc_newpage(d, title); pg->pw = SW / 12700.0; pg->ph = SH / 12700.0;
+        Rel rel[96]; int nrel; { const char *nm = a->e[idx[s]].name; const char *bn = strrchr(nm, '/'); char rn[200]; snprintf(rn, sizeof rn, "ppt/slides/_rels/%s.rels", bn ? bn + 1 : nm); nrel = rels_load(a, rn, rel, 96); }
         if (zip_read_entry(a, idx[s], &buf, &n, 32u << 20)) continue;
         XP x = { (const char *)buf, (const char *)buf + n }; XEv e; CBuf para = { 0 }, shape = { 0 };
-        int in_sp = 0, in_t = 0, is_title = 0, have_xf = 0, bullet = 0; double ox = 0, oy = 0, cx = 0, cy = 0;
+        int in_sp = 0, in_t = 0, is_title = 0, have_xf = 0, bullet = 0, in_pic = 0, is_cxn = 0, in_sppr = 0, in_ln = 0, in_sty = 0, in_bg = 0, in_gpr = 0, ovf = 0, sp = 0;
+        int fill_set = 0, line_set = 0, hasfill = 0, hasline = 0, geom = 0, has_styf = 0, has_styl = 0, pend = 0, ct_once = 0; u32 fillc = 0, linec = 0, styf = 0, styl = 0, base_c = 0; double lw = 0, lmod = 1, loff = 0;
+        double ox = 0, oy = 0, cx = 0, cy = 0, gx = 0, gy = 0, gw = 0, gh = 0, cx0 = 0, cy0 = 0, cw = 0, ch = 0; char blip[24]; blip[0] = 0; u32 *ct_c = NULL; int *ct_h = NULL; GXf st[10]; st[0].tx = st[0].ty = 0; st[0].sx = st[0].sy = 1;
         while (xml_next(&x, &e)) {
             if (e.kind == 1) {
-                if (!strcmp(e.name, "p:sp") || !strcmp(e.name, "p:graphicFrame")) { in_sp = 1; shape.n = 0; if (shape.s) shape.s[0] = 0; is_title = 0; have_xf = 0; ox = oy = cx = cy = 0; }
-                else if (!strcmp(e.name, "p:ph")) { char t[40]; if (xml_attr(&e, "type", t, sizeof t) && (!strcmp(t, "title") || !strcmp(t, "ctrTitle"))) is_title = 1; }
-                else if (!strcmp(e.name, "a:off")) { char v[32]; if (xml_attr(&e, "x", v, 32)) { ox = atof(v); have_xf = 1; } if (xml_attr(&e, "y", v, 32)) oy = atof(v); }
-                else if (!strcmp(e.name, "a:ext")) { char v[32]; if (xml_attr(&e, "cx", v, 32)) cx = atof(v); if (xml_attr(&e, "cy", v, 32)) cy = atof(v); }
-                else if (!strcmp(e.name, "a:p")) { para.n = 0; if (para.s) para.s[0] = 0; bullet = 0; }
-                else if (!strcmp(e.name, "a:buChar") || !strcmp(e.name, "a:buAutoNum")) bullet = 1;
-                else if (!strcmp(e.name, "a:t")) in_t = e.selfclose ? 0 : 1;
-                else if (!strcmp(e.name, "a:br")) cb_addc(&para, '\n');
-                else if (!strcmp(e.name, "a:tab")) cb_addc(&para, '\t');
-                else if (!strcmp(e.name, "p:pic")) { DBlock *b = page_add(pg, B_IMG, "[picture]", 9); b->x = -1; }
+                const char *nm = e.name; char v[40];
+                if (!strcmp(nm, "p:grpSp")) { if (sp < 8) { st[sp + 1] = st[sp]; sp++; } else ovf++; }
+                else if (!strcmp(nm, "p:grpSpPr")) { if (sp > 0) { in_gpr = 1; gx = gy = gw = gh = cx0 = cy0 = cw = ch = 0; } }
+                else if (!strcmp(nm, "p:sp") || !strcmp(nm, "p:graphicFrame") || !strcmp(nm, "p:cxnSp")) { in_sp = 1; is_cxn = !strcmp(nm, "p:cxnSp"); shape.n = 0; if (shape.s) shape.s[0] = 0; is_title = 0; have_xf = 0; ox = oy = cx = cy = 0; fill_set = line_set = hasfill = hasline = has_styf = has_styl = 0; geom = 0; lw = 0; }
+                else if (!strcmp(nm, "p:pic")) { in_pic = 1; have_xf = 0; ox = oy = cx = cy = 0; blip[0] = 0; }
+                else if (!strcmp(nm, "p:spPr")) in_sppr = 1;
+                else if (!strcmp(nm, "p:style")) in_sty = 1;
+                else if (!strcmp(nm, "p:bg")) in_bg = 1;
+                else if (!strcmp(nm, "a:ln") && in_sppr) { in_ln = !e.selfclose; if (xml_attr(&e, "w", v, 40)) lw = atof(v); }
+                else if (!strcmp(nm, "a:noFill") && in_sppr) { if (in_ln) { line_set = 1; hasline = 0; } else { fill_set = 1; hasfill = 0; } }
+                else if (!strcmp(nm, "a:solidFill") || !strcmp(nm, "a:gradFill")) {
+                    ct_c = NULL; ct_once = !strcmp(nm, "a:gradFill");
+                    if (in_bg) { ct_c = &pg->bg; ct_h = &pg->hasbg; }
+                    else if (in_sppr && in_ln) { if (!line_set || !ct_once) { ct_c = &linec; ct_h = &hasline; line_set = 1; } }
+                    else if (in_sppr && !in_pic) { if (!fill_set || !ct_once) { ct_c = &fillc; ct_h = &hasfill; fill_set = 1; } }
+                }
+                else if (in_sty && (!strcmp(nm, "a:fillRef") || !strcmp(nm, "a:lnRef"))) { ct_c = NULL; ct_once = 0; if (xml_attr(&e, "idx", v, 40) && atoi(v) > 0) { if (nm[2] == 'f') { ct_c = &styf; ct_h = &has_styf; } else { ct_c = &styl; ct_h = &has_styl; } } }
+                else if (ct_c && (!strcmp(nm, "a:srgbClr") || !strcmp(nm, "a:schemeClr") || !strcmp(nm, "a:sysClr"))) {
+                    int ok = 0; base_c = 0; if (!strcmp(nm, "a:srgbClr")) { if (xml_attr(&e, "val", v, 40)) { base_c = (u32)strtoul(v, NULL, 16); ok = 1; } }
+                    else if (!strcmp(nm, "a:sysClr")) { if (xml_attr(&e, "lastClr", v, 40)) { base_c = (u32)strtoul(v, NULL, 16); ok = 1; } }
+                    else if (xml_attr(&e, "val", v, 40)) { int k = scheme_idx(v); if (k >= 0) { base_c = tc[k]; ok = 1; } }
+                    lmod = 1; loff = 0; if (ok) { if (e.selfclose) { *ct_c = base_c; *ct_h = 1; if (ct_once) ct_c = NULL; } else pend = 1; }
+                }
+                else if (pend && !strcmp(nm, "a:lumMod")) { if (xml_attr(&e, "val", v, 40)) lmod = atof(v) / 100000.0; }
+                else if (pend && !strcmp(nm, "a:lumOff")) { if (xml_attr(&e, "val", v, 40)) loff = atof(v) / 100000.0; }
+                else if (in_sp && !strcmp(nm, "a:prstGeom")) { if (xml_attr(&e, "prst", v, 40)) geom = geom_code(v); }
+                else if (!strcmp(nm, "a:blip") && in_pic) xml_attr(&e, "r:embed", blip, 24);
+                else if (!strcmp(nm, "p:ph")) { char t[40]; if (xml_attr(&e, "type", t, sizeof t) && (!strcmp(t, "title") || !strcmp(t, "ctrTitle"))) is_title = 1; }
+                else if (!strcmp(nm, "a:off")) { char q[32]; if (in_gpr) { if (xml_attr(&e, "x", q, 32)) gx = atof(q); if (xml_attr(&e, "y", q, 32)) gy = atof(q); } else { if (xml_attr(&e, "x", q, 32)) { ox = atof(q); have_xf = 1; } if (xml_attr(&e, "y", q, 32)) oy = atof(q); } }
+                else if (!strcmp(nm, "a:ext")) { char q[32]; if (in_gpr) { if (xml_attr(&e, "cx", q, 32)) gw = atof(q); if (xml_attr(&e, "cy", q, 32)) gh = atof(q); } else { if (xml_attr(&e, "cx", q, 32)) cx = atof(q); if (xml_attr(&e, "cy", q, 32)) cy = atof(q); } }
+                else if (!strcmp(nm, "a:chOff") && in_gpr) { char q[32]; if (xml_attr(&e, "x", q, 32)) cx0 = atof(q); if (xml_attr(&e, "y", q, 32)) cy0 = atof(q); }
+                else if (!strcmp(nm, "a:chExt") && in_gpr) { char q[32]; if (xml_attr(&e, "cx", q, 32)) cw = atof(q); if (xml_attr(&e, "cy", q, 32)) ch = atof(q); }
+                else if (!strcmp(nm, "a:p")) { para.n = 0; if (para.s) para.s[0] = 0; bullet = 0; }
+                else if (!strcmp(nm, "a:buChar") || !strcmp(nm, "a:buAutoNum")) bullet = 1;
+                else if (!strcmp(nm, "a:t")) in_t = e.selfclose ? 0 : 1;
+                else if (!strcmp(nm, "a:br")) cb_addc(&para, '\n');
+                else if (!strcmp(nm, "a:tab")) cb_addc(&para, '\t');
             } else if (e.kind == 2) {
-                if (!strcmp(e.name, "a:t")) in_t = 0;
-                else if (!strcmp(e.name, "a:p") && in_sp) { if (para.n) { if (shape.n) cb_addc(&shape, '\n'); if (bullet) cb_adds(&shape, "\xE2\x80\xA2 "); cb_add(&shape, para.s, para.n); } para.n = 0; }
-                else if ((!strcmp(e.name, "p:sp") || !strcmp(e.name, "p:graphicFrame")) && in_sp) {
-                    if (shape.n) { DBlock *b = page_add(pg, B_SHAPE, shape.s, shape.n); b->bold = is_title; b->x = have_xf ? ox / 12700.0 : -1; b->y = have_xf ? oy / 12700.0 : -1; b->w = have_xf ? cx / 12700.0 : 0; b->h = have_xf ? cy / 12700.0 : 0; b->size = is_title; }
-                    in_sp = 0;
+                const char *nm = e.name;
+                if (pend && (!strcmp(nm, "a:srgbClr") || !strcmp(nm, "a:schemeClr") || !strcmp(nm, "a:sysClr"))) { pend = 0; if (ct_c) { *ct_c = clr_lum(base_c, lmod, loff); *ct_h = 1; if (ct_once) ct_c = NULL; } }
+                else if (!strcmp(nm, "a:solidFill") || !strcmp(nm, "a:gradFill") || !strcmp(nm, "a:fillRef") || !strcmp(nm, "a:lnRef")) { ct_c = NULL; pend = 0; }
+                else if (!strcmp(nm, "a:ln")) in_ln = 0;
+                else if (!strcmp(nm, "p:spPr")) { in_sppr = 0; in_ln = 0; }
+                else if (!strcmp(nm, "p:style")) in_sty = 0;
+                else if (!strcmp(nm, "p:bg")) in_bg = 0;
+                else if (!strcmp(nm, "p:grpSpPr")) {
+                    if (in_gpr && sp > 0) { double s1 = cw > 0 ? gw / cw : 1, s2 = ch > 0 ? gh / ch : 1; const GXf *pa = &st[sp - 1]; st[sp].sx = pa->sx * s1; st[sp].sy = pa->sy * s2; st[sp].tx = pa->tx + pa->sx * (gx - cx0 * s1); st[sp].ty = pa->ty + pa->sy * (gy - cy0 * s2); }
+                    in_gpr = 0;
+                }
+                else if (!strcmp(nm, "p:grpSp")) { if (ovf) ovf--; else if (sp > 0) sp--; }
+                else if (!strcmp(nm, "a:t")) in_t = 0;
+                else if (!strcmp(nm, "a:p") && in_sp) { if (para.n) { if (shape.n) cb_addc(&shape, '\n'); if (bullet) cb_adds(&shape, "\xE2\x80\xA2 "); cb_add(&shape, para.s, para.n); } para.n = 0; }
+                else if (!strcmp(nm, "p:pic") && in_pic) {
+                    in_pic = 0; DBlock *b = page_add(pg, B_IMG, "[picture]", 9); b->x = -1;
+                    if (have_xf && cx > 0 && cy > 0) { const GXf *g = &st[sp]; b->x = (g->tx + g->sx * ox) / 12700.0; b->y = (g->ty + g->sy * oy) / 12700.0; b->w = g->sx * cx / 12700.0; b->h = g->sy * cy / 12700.0; }
+                    if (blip[0]) part_image(a, rel, nrel, "ppt/slides/", blip, b);
+                }
+                else if ((!strcmp(nm, "p:sp") || !strcmp(nm, "p:graphicFrame") || !strcmp(nm, "p:cxnSp")) && in_sp) {
+                    if (!fill_set && has_styf) { hasfill = 1; fillc = styf; } if (!line_set && has_styl) { hasline = 1; linec = styl; } if (is_cxn) geom = 4;
+                    int vis = hasfill || hasline || geom == 4;
+                    if (shape.n || (vis && have_xf)) {
+                        DBlock *b = page_add(pg, B_SHAPE, shape.s ? shape.s : "", shape.n); b->bold = is_title; b->size = is_title; b->x = b->y = -1;
+                        if (have_xf) { const GXf *g = &st[sp]; b->x = (g->tx + g->sx * ox) / 12700.0; b->y = (g->ty + g->sy * oy) / 12700.0; b->w = g->sx * cx / 12700.0; b->h = g->sy * cy / 12700.0; }
+                        b->hasfill = hasfill; b->fill = fillc; b->hasline = hasline; b->line = linec; b->geom = geom; b->lw = lw / 12700.0 * st[sp].sx;
+                    }
+                    in_sp = 0; is_cxn = 0;
                 }
             } else if (e.kind == 3 && in_t) xml_text(e.text, e.tlen, &para);
         }
@@ -1150,6 +1264,9 @@ typedef struct {
     int pvsz0, pvsz1, pvsz2, pvsz3, pvsz4, pvsz5, pvsz6, pvsz7;
     SL favorites, pins, recent_folders, recent_files, session_tabs, pinned_tabs, autostart_apps;
     SL doc_fonts, search_hist, search_pins, folder_colors, icon_map, assoc;
+    int confirm_ops, recycle, dbl_up, drag_margin, ext_icons, pc_tiles, pv_limit_mb, nav_right, hide_apps_sys;
+    WCHAR apps_title[32], video_player[MAX_PATH], layout_name[32];
+    SL apps, apps_hide, shortcuts, layout_cur, layouts, trash_idx, games;
     Extra *extra; int nextra;
 } Cfg;
 static Cfg C;
@@ -1182,6 +1299,10 @@ static const Field CFG_FIELDS[] = {
     FLD_I("pvsz_word", pvsz4), FLD_I("pvsz_excel", pvsz5), FLD_I("pvsz_ppt", pvsz6), FLD_I("pvsz_archive", pvsz7),
     FLD_L("doc_fonts", doc_fonts), FLD_L("search_hist", search_hist), FLD_L("search_pins", search_pins),
     FLD_L("folder_colors", folder_colors), FLD_L("icon_map", icon_map), FLD_L("assoc", assoc),
+    FLD_B("confirm_ops", confirm_ops), FLD_B("recycle", recycle), FLD_B("dbl_up", dbl_up), FLD_I("drag_margin", drag_margin), FLD_B("ext_icons", ext_icons),
+    FLD_B("pc_tiles", pc_tiles), FLD_I("pv_limit_mb", pv_limit_mb), FLD_B("nav_right", nav_right), FLD_B("hide_apps_sys", hide_apps_sys),
+    FLD_S("apps_title", apps_title), FLD_S("video_player", video_player), FLD_S("layout_name", layout_name),
+    FLD_L("apps", apps), FLD_L("apps_hide", apps_hide), FLD_L("shortcuts", shortcuts), FLD_L("layout_cur", layout_cur), FLD_L("layouts", layouts), FLD_L("trash_idx", trash_idx), FLD_L("games", games),
 };
 #define NFIELDS ARRLEN(CFG_FIELDS)
 
@@ -1189,8 +1310,9 @@ static void cfg_defaults(void) {
     for (int i = 0; i < C.nextra; i++) free(C.extra[i].raw);
     free(C.extra);
     SL *lists[] = { &C.favorites, &C.pins, &C.recent_folders, &C.recent_files, &C.session_tabs, &C.pinned_tabs, &C.autostart_apps,
-                    &C.doc_fonts, &C.search_hist, &C.search_pins, &C.folder_colors, &C.icon_map, &C.assoc };
-    enum { NLISTS = 13 };
+                    &C.doc_fonts, &C.search_hist, &C.search_pins, &C.folder_colors, &C.icon_map, &C.assoc,
+                    &C.apps, &C.apps_hide, &C.shortcuts, &C.layout_cur, &C.layouts, &C.trash_idx, &C.games };
+    enum { NLISTS = 20 };
     SL keep[NLISTS];
     for (int i = 0; i < NLISTS; i++) { sl_clear(lists[i]); keep[i] = *lists[i]; }
     memset(&C, 0, sizeof C);
@@ -1204,6 +1326,7 @@ static void cfg_defaults(void) {
     C.checkboxes = 1; C.thumb_img = 1; C.thumb_vid = 1; C.thumb_gfx = 1; C.drag_drop = 1; C.rubber = 1; C.admin_menu = 1;
     C.video_mode = 0; C.pv_zoom = 100; C.ribbon_open = 1; C.ribbon_tab = 1; C.auto_class = 1; C.show_counts = 1;
     C.pvsz0 = 1; C.pvsz1 = 1; C.pvsz2 = 1; C.pvsz3 = 2; C.pvsz4 = 2; C.pvsz5 = 2; C.pvsz6 = 2; C.pvsz7 = 1;
+    C.confirm_ops = 1; C.recycle = 1; C.dbl_up = 1; C.drag_margin = 48; C.ext_icons = 1; C.pc_tiles = 1; C.pv_limit_mb = 40; scpy(C.apps_title, 32, L"Computer");
 }
 
 /* --- tiny JSON reader (operates on UTF-16) --- */
@@ -1313,7 +1436,10 @@ static int write_utf8_file(const WCHAR *path, const WCHAR *w, int n) {
     free(b); return ok;
 }
 static void cfg_validate(void);
+static int g_viewer;                 /* running as the stand-alone Viewer app: never write the shared settings */
+static WCHAR g_vfile[MAX_PATH];     /* the file shown by the Viewer */
 static void cfg_save(void) {
+    if (g_viewer) return;
     SB b = { 0 }; sb_add(&b, L"{\n");
     for (int i = 0; i < (int)NFIELDS; i++) {
         const Field *f = &CFG_FIELDS[i]; u8 *base = (u8 *)&C + f->off;
@@ -1718,6 +1844,11 @@ static void paint_glyph(HDC dc, int kind, int x, int y, int s, COLORREF c) {
               p[i].x = x + s / 2 + (int)(cos(a) * rr); p[i].y = y + s / 2 + 1 + (int)(sin(a) * rr); } poly(dc, p, 10, c); break; } /* star */
     case 4: { r.left = x + 1; r.top = y + 2; r.right = x + s - 1; r.bottom = y + s - 5; framer(dc, &r, c); framer(dc, &(RECT){ r.left + 1, r.top + 1, r.right - 1, r.bottom - 1 }, c);
               fill4(dc, x + s / 2 - 2, y + s - 5, x + s / 2 + 2, y + s - 2, c); fill4(dc, x + 3, y + s - 2, x + s - 3, y + s - 1, c); break; } /* pc */
+    case 6: { fill4(dc, x + 2, y + 2, x + s - 2, y + 4, c); fill4(dc, x + s / 2 - 2, y, x + s / 2 + 2, y + 2, c); POINT q[4] = { { x + 3, y + 5 }, { x + s - 3, y + 5 }, { x + s - 5, y + s - 1 }, { x + 5, y + s - 1 } }; poly(dc, q, 4, c);
+              fill4(dc, x + s / 2 - 1, y + 7, x + s / 2 + 1, y + s - 4, shadec(c, 0.5)); fill4(dc, x + s / 3 - 1, y + 7, x + s / 3 + 1, y + s - 4, shadec(c, 0.5)); fill4(dc, x + s * 2 / 3, y + 7, x + s * 2 / 3 + 2, y + s - 4, shadec(c, 0.5)); break; }        /* recycle bin */
+    case 7: { for (int a = 0; a < 2; a++) for (int b2 = 0; b2 < 2; b2++) { RECT q = { x + 1 + a * (s / 2), y + 1 + b2 * (s / 2), x + 1 + a * (s / 2) + s / 2 - 2, y + 1 + b2 * (s / 2) + s / 2 - 2 }; if (a == 1 && b2 == 0) framer(dc, &q, c); else fillr(dc, &q, c); } break; }   /* apps */
+    case 8: { RECT b = { x, y + s / 4, x + s - 1, y + s - s / 5 }; framer(dc, &b, c); RECT hh = { x + s / 6, y + s / 2 - 1, x + s / 6 + s / 3, y + s / 2 + 1 }; fillr(dc, &hh, c); RECT vv = { x + s / 6 + s / 6 - 1, y + s / 2 - s / 6, x + s / 6 + s / 6 + 1, y + s / 2 + s / 6 + 1 }; fillr(dc, &vv, c);
+        RECT d1 = { x + s * 5 / 8, y + s / 2 - 2, x + s * 5 / 8 + 3, y + s / 2 + 1 }; fillr(dc, &d1, c); RECT d2 = { x + s * 3 / 4 + 1, y + s / 2, x + s * 3 / 4 + 4, y + s / 2 + 3 }; fillr(dc, &d2, c); break; }   /* games */
     case 5: { r.left = x + 1; r.top = y + s / 3; r.right = x + s - 1; r.bottom = y + s * 2 / 3 + 2; b = CreateSolidBrush(c); FillRect(dc, &r, b); DeleteObject(b);
               fill4(dc, x + s - 5, y + s / 2, x + s - 3, y + s / 2 + 2, RGB(90, 220, 90)); break; }                  /* drive */
     }
@@ -1744,6 +1875,7 @@ static void paint_glyph(HDC dc, int kind, int x, int y, int s, COLORREF c) {
 typedef struct {
     WCHAR name[256], path[MAX_PATH], type[64];
     int dir, kind, sel; u64 size; FILETIME mt;      /* kind: 0 normal, 1 drive/special */
+    u64 freeb; int ord;
 } Item;
 typedef struct {
     WCHAR path[MAX_PATH], filter[256];
@@ -1847,6 +1979,8 @@ static Tab *g_st;
 static int is_pinned(const Item *it) { return sl_find(&C.pins, it->path) >= 0; }
 static int cmp_view(const void *a, const void *b) {
     const Item *x = &g_st->it[*(const int *)a], *y = &g_st->it[*(const int *)b];
+    if (!g_st->path[0]) return *(const int *)a - *(const int *)b;                       /* This PC keeps its section order */
+    if (!wcscmp(g_st->path, L"::apps") || !wcscmp(g_st->path, L"::games")) { int d = x->ord - y->ord; return d ? d : StrCmpLogicalW(x->name, y->name); }
     int px_ = is_pinned(x), py_ = is_pinned(y); if (px_ != py_) return py_ - px_;
     if (wcscmp(C.sort_dirs, L"mixed") && x->dir != y->dir) { int d = y->dir - x->dir; return wcscmp(C.sort_dirs, L"first") ? -d : d; }
     int r = 0;
@@ -1883,9 +2017,58 @@ static void add_folder_item(Tab *t, const WCHAR *path, int kind) {
     const WCHAR *b = base_name(path); scpy(i->name, 256, *b ? b : path); scpy(i->type, 64, L"File folder");
     WIN32_FILE_ATTRIBUTE_DATA d; if (GetFileAttributesExW(path, GetFileExInfoStandard, &d)) i->mt = d.ftLastWriteTime;
 }
+/* ---- recycle bin (own, works the same on Wine/Winlator) ---- */
+static WCHAR g_trash[MAX_PATH];
+static const WCHAR *trash_dir(void) { if (!g_trash[0]) { path_join(g_trash, MAX_PATH, CONFIG_DIR, L"Trash"); CreateDirectoryW(g_trash, NULL); } return g_trash; }
+static const WCHAR *trash_orig(const WCHAR *stored) {
+    int l = lstrlenW(stored); for (int i = 0; i < C.trash_idx.n; i++) { const WCHAR *s = C.trash_idx.v[i]; const WCHAR *bar = wcschr(s, '|'); if (bar && (int)(bar - s) == l && !_wcsnicmp(s, stored, l)) return bar + 1; } return NULL;
+}
+static int in_trash(const WCHAR *p) { return under_path(p, trash_dir()); }
+/* ---- Computer / apps tab ---- */
+static const WCHAR *app_group(const WCHAR *p) {
+    if (StrStrIW(p, L"\\Start Menu\\")) return L"Start Menu"; if (StrStrIW(p, L"\\Desktop\\")) return L"Desktop"; if (StrStrIW(p, L"\\Program Files")) return L"Program Files";
+    WCHAR w[MAX_PATH]; GetWindowsDirectoryW(w, MAX_PATH); if (under_path(p, w)) return L"System"; return L"Added";
+}
+static int apps_seen(Tab *t, const WCHAR *p) { for (int i = 0; i < t->n; i++) if (!lstrcmpiW(t->it[i].path, p)) return 1; return 0; }
+static int app_skip_name(const WCHAR *n) {
+    static const WCHAR *bad[] = { L"unins", L"uninst", L"crash", L"helper", L"update", L"setup", L"redist", L"vc_", L"vcredist", L"dxsetup", L"install", L"dotnet", L"report", NULL };
+    for (int i = 0; bad[i]; i++) if (StrStrIW(n, bad[i])) return 1; return 0;
+}
+static void apps_push(Tab *t, const WCHAR *path, int ordv) {
+    if (t->n >= 900 || sl_find(&C.apps_hide, path) >= 0 || apps_seen(t, path)) return; WIN32_FILE_ATTRIBUTE_DATA d; if (!GetFileAttributesExW(path, GetFileExInfoStandard, &d)) return;
+    Item *i = tab_add(t); scpy(i->path, MAX_PATH, path); i->dir = (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0; scpy(i->name, 256, base_name(path));
+    if (!i->dir) { WCHAR *e = PathFindExtensionW(i->name); if (*e && !lstrcmpiW(e, L".lnk")) *e = 0; else if (*e && (!lstrcmpiW(e, L".exe") || !lstrcmpiW(e, L".bat") || !lstrcmpiW(e, L".cmd") || !lstrcmpiW(e, L".com") || !lstrcmpiW(e, L".msi"))) *e = 0; }
+    scpy(i->type, 64, app_group(path)); i->ord = ordv; i->mt = d.ftLastWriteTime; i->size = i->dir ? 0 : (((u64)d.nFileSizeHigh << 32) | d.nFileSizeLow);
+}
+static void apps_scan(Tab *t, const WCHAR *dir, int depth, int maxd, int lnk, int exe) {
+    WCHAR pat[MAX_PATH]; path_join(pat, MAX_PATH, dir, L"*"); WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd); if (h == INVALID_HANDLE_VALUE) return;
+    do { if (t->n >= 900) break; if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue; WCHAR c[MAX_PATH]; path_join(c, MAX_PATH, dir, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { if (depth < maxd && !(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) apps_scan(t, c, depth + 1, maxd, lnk, exe); }
+        else { const WCHAR *e = PathFindExtensionW(fd.cFileName); if (app_skip_name(fd.cFileName)) continue; if ((lnk && !lstrcmpiW(e, L".lnk")) || (exe && !lstrcmpiW(e, L".exe"))) apps_push(t, c, 100000 + t->n); } } while (FindNextFileW(h, &fd)); FindClose(h);
+}
+static void read_games(Tab *t);
+static void game_remove(void);
+static void game_rename(int idx, const WCHAR *nn);
+static void read_apps(Tab *t) {
+    for (int k = 0; k < C.apps.n; k++) if (path_exists(C.apps.v[k])) apps_push(t, C.apps.v[k], k);
+    WCHAR d[MAX_PATH]; static const int sf[] = { 0x10, 0x19 }; for (int k = 0; k < 2; k++) if (SHGetSpecialFolderPathW(NULL, d, sf[k], FALSE)) apps_scan(t, d, 0, 1, 1, 1);
+    static const int sm[] = { 0x17, 0x02 }; for (int k = 0; k < 2; k++) if (SHGetSpecialFolderPathW(NULL, d, sm[k], FALSE)) apps_scan(t, d, 0, 3, 1, 0);
+    static const WCHAR *pf[] = { L"%ProgramFiles%", L"%ProgramFiles(x86)%", L"%ProgramW6432%", L"C:\\Program Files", L"C:\\Program Files (x86)" };
+    for (int k = 0; k < 5; k++) { WCHAR b[MAX_PATH]; ExpandEnvironmentStringsW(pf[k], b, MAX_PATH); if (b[0] != '%' && dir_exists(b)) apps_scan(t, b, 0, 2, 0, 1); }
+    if (!C.hide_apps_sys) { WCHAR w[MAX_PATH], s[MAX_PATH]; GetWindowsDirectoryW(w, MAX_PATH); GetSystemDirectoryW(s, MAX_PATH);
+        static const WCHAR *sys[] = { L"notepad.exe", L"wordpad.exe", L"write.exe", L"mspaint.exe", L"calc.exe", L"cmd.exe", L"control.exe", L"regedit.exe", L"taskmgr.exe", L"winecfg.exe", L"explorer.exe", L"uninstaller.exe", L"msiexec.exe", L"wineboot.exe", L"winefile.exe", L"clock.exe", L"oleview.exe", L"progman.exe" };
+        for (int k = 0; k < 18; k++) { WCHAR p[MAX_PATH]; path_join(p, MAX_PATH, w, sys[k]); if (!path_exists(p)) path_join(p, MAX_PATH, s, sys[k]); if (path_exists(p)) apps_push(t, p, 200000 + k); } }
+}
 static void read_special(Tab *t) {
     WCHAR h[MAX_PATH], p[MAX_PATH]; home_dir(h);
-    if (!t->path[0]) {                              /* This PC: drives */
+    if (!wcscmp(t->path, L"::apps")) { read_apps(t); return; }
+    if (!wcscmp(t->path, L"::games")) { read_games(t); return; }
+    if (!wcscmp(t->path, L"::trash")) {
+        WCHAR pat[MAX_PATH]; const WCHAR *td = trash_dir(); path_join(pat, MAX_PATH, td, L"*"); WIN32_FIND_DATAW fd; HANDLE f = FindFirstFileW(pat, &fd); if (f == INVALID_HANDLE_VALUE) return;
+        do { if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue; Item *i = tab_add(t); item_from_fd(i, td, &fd); const WCHAR *o = trash_orig(fd.cFileName); if (o) { WCHAR par[MAX_PATH]; parent_of(o, par); scpy(i->type, 64, par[0] ? par : o); } } while (FindNextFileW(f, &fd)); FindClose(f); return;
+    }
+    if (!t->path[0]) {                              /* This PC: folders + drives */
+        { static const WCHAR *n[] = { L"Desktop", L"Documents", L"Downloads", L"Music", L"Pictures", L"Videos" }; for (int k = 0; k < 6; k++) { path_join(p, MAX_PATH, h, n[k]); add_folder_item(t, p, 0); } }
         DWORD mask = GetLogicalDrives();
         for (int k = 0; k < 26; k++) {
             if (!(mask & (1u << k))) continue;
@@ -1893,7 +2076,7 @@ static void read_special(Tab *t) {
             const WCHAR *tn = dt == DRIVE_REMOVABLE ? L"Removable Disk" : dt == DRIVE_REMOTE ? L"Network Drive" : dt == DRIVE_CDROM ? L"CD Drive" : L"Local Disk";
             Item *i = tab_add(t); scpy(i->path, MAX_PATH, root); i->dir = 1; i->kind = 1; scpy(i->type, 64, tn);
             wfmt(i->name, 256, L"%lc: (%ls)", root[0], tn);
-            u64 tot = 0; free_space(root, &tot); i->size = tot;
+            u64 tot = 0; u64 fr = free_space(root, &tot); i->size = tot; i->freeb = fr;
         }
     } else if (!wcscmp(t->path, L"::quick")) {
         static const WCHAR *n[] = { L"Desktop", L"Downloads", L"Documents", L"Pictures", L"Music", L"Videos" };
@@ -1984,6 +2167,7 @@ static void poll_search(void) {
 
 /* ---- reload / navigate ---- */
 static void nav_rebuild(void);
+static void tree_reveal(const WCHAR *path);
 static void sel_clear(Tab *t) { for (int i = 0; i < t->n; i++) t->it[i].sel = 0; t->focus = t->anchor = -1; }
 static void preview_update(void);
 static void reload(int keep) {
@@ -2003,7 +2187,7 @@ static void reload(int keep) {
 }
 static void set_title(void) {
     Tab *t = curtab(); WCHAR ti[MAX_PATH + 32];
-    const WCHAR *n = !t->path[0] ? L"This PC" : !wcscmp(t->path, L"::quick") ? cur_style()->sec[0] : !wcscmp(t->path, L"::recent") ? cur_style()->sec[1]
+    const WCHAR *n = !t->path[0] ? L"This PC" : !wcscmp(t->path, L"::apps") ? (C.apps_title[0] ? C.apps_title : L"Computer") : !wcscmp(t->path, L"::trash") ? L"Recycle Bin" : !wcscmp(t->path, L"::games") ? L"Games" : !wcscmp(t->path, L"::quick") ? cur_style()->sec[0] : !wcscmp(t->path, L"::recent") ? cur_style()->sec[1]
                    : !wcscmp(t->path, L"::fav") ? cur_style()->sec[2] : (base_name(t->path)[0] ? base_name(t->path) : t->path);
     wfmt(ti, MAX_PATH + 32, L"%ls - %ls", n, cur_style()->label); SetWindowTextW(S.hwnd, ti); scpy(S.title, MAX_PATH + 64, ti); redraw();
 }
@@ -2017,7 +2201,7 @@ static void navigate(const WCHAR *path, int push) {
         if (!t->hist.n || !wieq(t->hist.v[t->hist.n - 1], p)) sl_add(&t->hist, p);
         t->hidx = t->hist.n - 1;
     }
-    sel_clear(t); t->scroll = 0;
+    sel_clear(t); t->scroll = 0; tree_reveal(p);
     if (p[0] && !is_special(p)) { sl_front(&C.recent_folders, p, 12); scpy(C.last_dir, MAX_PATH, p); }
     reload(0); set_title();
 }
@@ -2111,7 +2295,40 @@ static int copy_tree(const WCHAR *src, const WCHAR *dst) {
     }
     return CopyFileW(src, dst, FALSE) != 0;
 }
+static int trash_put(const WCHAR *src) {
+    WCHAR dst[MAX_PATH]; const WCHAR *td = trash_dir(); unique_name(td, base_name(src), dir_exists(src), dst, MAX_PATH); clear_ro(src);
+    int ok = MoveFileExW(src, dst, MOVEFILE_COPY_ALLOWED) != 0; if (!ok) { ok = copy_tree(src, dst); if (ok) delete_tree(src); else delete_tree(dst); }
+    if (ok) { WCHAR e[MAX_PATH * 2 + 4]; wfmt(e, MAX_PATH * 2 + 4, L"%ls|%ls", base_name(dst), src); sl_add(&C.trash_idx, e); } return ok;
+}
+static int trash_restore_one(const WCHAR *stored_path) {
+    const WCHAR *o = trash_orig(base_name(stored_path)); WCHAR dst[MAX_PATH], par[MAX_PATH]; if (!o) { WCHAR h[MAX_PATH]; home_dir(h); path_join(dst, MAX_PATH, h, base_name(stored_path)); } else scpy(dst, MAX_PATH, o);
+    parent_of(dst, par); if (par[0] && !dir_exists(par)) SHCreateDirectoryExW(NULL, par, NULL);
+    if (path_exists(dst)) { WCHAR u[MAX_PATH]; unique_name(par, base_name(dst), dir_exists(stored_path), u, MAX_PATH); scpy(dst, MAX_PATH, u); }
+    int ok = MoveFileExW(stored_path, dst, MOVEFILE_COPY_ALLOWED) != 0; if (!ok) { ok = copy_tree(stored_path, dst); if (ok) delete_tree(stored_path); }
+    if (ok) { int l = lstrlenW(base_name(stored_path)); for (int i = 0; i < C.trash_idx.n; i++) { const WCHAR *s = C.trash_idx.v[i]; const WCHAR *bar = wcschr(s, '|'); if (bar && (int)(bar - s) == l && !_wcsnicmp(s, base_name(stored_path), l)) { sl_del(&C.trash_idx, i); break; } } } return ok;
+}
+static void trash_empty(void) {
+    WCHAR pat[MAX_PATH]; path_join(pat, MAX_PATH, trash_dir(), L"*"); WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) { do { if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue; WCHAR c[MAX_PATH]; path_join(c, MAX_PATH, trash_dir(), fd.cFileName); delete_tree(c); } while (FindNextFileW(h, &fd)); FindClose(h); }
+    sl_clear(&C.trash_idx);
+}
 typedef struct { WCHAR dest[MAX_PATH]; SL srcs; int move; HWND hwnd; } PasteJob;
+typedef struct { SL srcs; int mode; HWND hwnd; } DelJob;   /* mode 0 recycle, 1 permanent, 2 restore */
+static DWORD WINAPI delete_thread(LPVOID p) {
+    DelJob *j = (DelJob *)p; int done = 0, fail = 0;
+    for (int i = 0; i < j->srcs.n; i++) {
+        wfmt(S.status_msg, 160, L"%ls %d of %d: %ls", j->mode == 2 ? L"Restoring" : j->mode == 0 ? L"Recycling" : L"Deleting", i + 1, j->srcs.n, base_name(j->srcs.v[i])); PostMessageW(j->hwnd, WM_APP_REFRESH, 0, 0);
+        int ok = j->mode == 2 ? trash_restore_one(j->srcs.v[i]) : j->mode == 0 ? trash_put(j->srcs.v[i]) : delete_tree(j->srcs.v[i]);
+        if (ok) done++; else fail++;
+    }
+    wfmt(S.status_msg, 160, L"%d item(s) %ls%ls", done, j->mode == 2 ? L"restored" : j->mode == 0 ? L"moved to the Recycle Bin" : L"deleted", fail ? L" - some failed" : L"");
+    PostMessageW(j->hwnd, WM_APP_TASKDONE, fail, 0); sl_clear(&j->srcs); free(j->srcs.v); free(j); return 0;
+}
+static void start_delete(SL *s, int mode) {
+    if (InterlockedCompareExchange(&S.busy, 1, 0)) { toast(L"Another operation is running"); return; }
+    DelJob *j = (DelJob *)calloc(1, sizeof *j); j->mode = mode; j->hwnd = S.hwnd; for (int i = 0; i < s->n; i++) sl_add(&j->srcs, s->v[i]);
+    HANDLE h = CreateThread(NULL, 0, delete_thread, j, 0, NULL); if (h) CloseHandle(h); else { S.busy = 0; sl_clear(&j->srcs); free(j->srcs.v); free(j); }
+}
 typedef struct { const WCHAR *text, *title; UINT flags; int result; } AskReq;
 static int ask_ui(HWND h, const WCHAR *text, const WCHAR *title, UINT flags) { AskReq a; a.text = text; a.title = title; a.flags = flags; a.result = 0; SendMessageW(h, WM_APP_ASK, 0, (LPARAM)&a); return a.result; }
 static DWORD WINAPI paste_thread(LPVOID p) {
@@ -2156,6 +2373,8 @@ static void start_transfer(const WCHAR *dest, SL *srcs, int move) {
 static void do_paste(void) {
     Tab *t = curtab(); if (!S.clip.n) { toast(L"Clipboard is empty"); return; }
     if (!t->path[0] || is_special(t->path)) { toast(L"Open a folder to paste into"); return; }
+    if (C.confirm_ops) { WCHAR m[MAX_PATH + 160]; if (S.clip.n == 1) wfmt(m, MAX_PATH + 160, L"%ls \"%ls\" to:\n%ls ?", S.clip_cut ? L"Move" : L"Copy", base_name(S.clip.v[0]), t->path); else wfmt(m, MAX_PATH + 160, L"%ls %d items to:\n%ls ?", S.clip_cut ? L"Move" : L"Copy", S.clip.n, t->path);
+        if (fm_msgbox(m, S.clip_cut ? L"Confirm move" : L"Confirm copy", MB_YESNO | MB_ICONQUESTION) != IDYES) return; }
     if (InterlockedCompareExchange(&S.busy, 1, 0)) { toast(L"Another operation is running"); return; }
     PasteJob *j = (PasteJob *)calloc(1, sizeof *j); scpy(j->dest, MAX_PATH, t->path); j->move = S.clip_cut; j->hwnd = S.hwnd;
     for (int i = 0; i < S.clip.n; i++) sl_add(&j->srcs, S.clip.v[i]);
@@ -2164,21 +2383,29 @@ static void do_paste(void) {
     if (h) CloseHandle(h); else { S.busy = 0; sl_clear(&j->srcs); free(j->srcs.v); free(j); }
 }
 static void do_copy(int cut) {
-    Tab *t = curtab(); sl_clear(&S.clip); collect_sel(t, &S.clip); S.clip_cut = cut;
+    Tab *t = curtab(); if (cut && (!wcscmp(t->path, L"::apps") || !wcscmp(t->path, L"::games"))) { toast(L"Cut is not available in this tab"); return; } sl_clear(&S.clip); collect_sel(t, &S.clip); S.clip_cut = cut;
     WCHAR m[64]; wfmt(m, 64, L"%d item(s) %ls", S.clip.n, cut ? L"cut" : L"copied"); if (S.clip.n) toast(m);
 }
-static void do_delete(void) {
-    Tab *t = curtab(); SL s = { 0 }; collect_sel(t, &s); if (!s.n) return;
-    WCHAR msg[MAX_PATH + 120];
-    if (s.n == 1) wfmt(msg, MAX_PATH + 120, L"Permanently delete \"%ls\"?\nThis cannot be undone.", base_name(s.v[0]));
-    else wfmt(msg, 200, L"Permanently delete %d items?\nThis cannot be undone.", s.n);
-    if (fm_msgbox( msg, L"Delete", MB_YESNO | MB_ICONWARNING) == IDYES) {
-        int fail = 0; for (int i = 0; i < s.n; i++) if (!delete_tree(s.v[i])) fail++;
-        for (int i = 0; i < s.n; i++) { int k = sl_find(&C.pins, s.v[i]); if (k >= 0) sl_del(&C.pins, k); }
-        if (fail) toast(L"Some items could not be deleted");
-        reload(0);
-    }
-    sl_clear(&s); free(s.v);
+static void do_delete(int force_perm) {
+    Tab *t = curtab(); SL s = { 0 }; collect_sel(t, &s); if (!s.n) { free(s.v); return; }
+    if (!wcscmp(t->path, L"::games")) { sl_clear(&s); free(s.v); game_remove(); return; }
+    if (!wcscmp(t->path, L"::apps")) {                       /* apps tab: only removes the entry from the list */
+        for (int i = 0; i < s.n; i++) { int k = sl_find(&C.apps, s.v[i]); if (k >= 0) sl_del(&C.apps, k); if (sl_find(&C.apps_hide, s.v[i]) < 0) sl_add(&C.apps_hide, s.v[i]); }
+        cfg_save(); reload(0); toast(L"Removed from the list (files are untouched)"); sl_clear(&s); free(s.v); return; }
+    int in_bin = !wcscmp(t->path, L"::trash"); int perm = force_perm || !C.recycle || in_bin; WCHAR msg[MAX_PATH + 200];
+    if (s.n == 1) wfmt(msg, MAX_PATH + 200, perm ? L"Permanently delete \"%ls\"?\nThis cannot be undone." : L"Move \"%ls\" to the Recycle Bin?", base_name(s.v[0]));
+    else wfmt(msg, MAX_PATH + 200, perm ? L"Permanently delete %d items?\nThis cannot be undone." : L"Move %d items to the Recycle Bin?", s.n);
+    if ((perm || C.confirm_ops) && fm_msgbox(msg, perm ? L"Delete permanently" : L"Recycle Bin", MB_YESNO | (perm ? MB_ICONWARNING : MB_ICONQUESTION)) != IDYES) { sl_clear(&s); free(s.v); return; }
+    for (int i = 0; i < s.n; i++) { int k = sl_find(&C.pins, s.v[i]); if (k >= 0) sl_del(&C.pins, k); }
+    start_delete(&s, perm ? 1 : 0); sl_clear(&s); free(s.v);
+}
+static void do_restore_trash(void) {
+    Tab *t = curtab(); SL s = { 0 }; collect_sel(t, &s); if (!s.n) { for (int i = 0; i < t->nv; i++) sl_add(&s, t->it[t->view[i]].path); } if (!s.n) { free(s.v); return; }
+    start_delete(&s, 2); sl_clear(&s); free(s.v);
+}
+static void do_empty_trash(void) {
+    if (fm_msgbox(L"Permanently delete everything in the Recycle Bin?\nThis cannot be undone.", L"Empty Recycle Bin", MB_YESNO | MB_ICONWARNING) != IDYES) return;
+    trash_empty(); cfg_save(); toast(L"Recycle Bin emptied"); reload(0);
 }
 static void begin_rename(void);
 static void unique_new(const WCHAR *dir, const WCHAR *stem, const WCHAR *ext, WCHAR *out, int cap) {
@@ -2640,20 +2867,25 @@ enum {
     CMD_SETICON, CMD_CLEARICON, CMD_PVFULL, CMD_TREE, CMD_CHECKS, CMD_RIBBON, CMD_SELNONE, CMD_ADDFONT, CMD_HAMBURGER, CMD_SHORTCUT_HERE,
     CMD_THUMB_IMG, CMD_THUMB_VID, CMD_THUMB_GFX, CMD_DRAGDROP, CMD_RUBBER, CMD_ADMINMENU, CMD_COUNTS, CMD_CLEARHIST, CMD_PVSIDE, CMD_ADDSEARCH, CMD_PVPLAY,
     CMD_FOLDERFIRST, CMD_NEWWIN, CMD_SETICON_EXT, CMD_SETICON_DIR, CMD_EXTRACT_MENU, CMD_PVCLOSE, CMD_SRCH_HIST0 = 700, CMD_SRCH_PIN0 = 760, CMD_SRCH_EXT0 = 820, CMD_SRCH_PINCUR = 880, CMD_SRCH_CLEAR, CMD_SRCH_UNPIN0 = 900, CMD_OW0 = 2000, CMD_OW_MORE = 2400,
+    CMD_DELETE_PERM = 5000, CMD_RESTORE_TRASH, CMD_EMPTY_TRASH, CMD_TRASH, CMD_APPS, CMD_APP_ADD, CMD_APP_UP, CMD_APP_DOWN, CMD_APP_TOP, CMD_APP_REMOVE, CMD_APP_RESET,
+    CMD_LAYOUT_EDIT, CMD_LAYOUT_SAVE, CMD_LAYOUT_RESET, CMD_LAYOUT_NAVSIDE, CMD_FIT_PAGE, CMD_LOADBIG, CMD_BACKUP_FULL, CMD_RESTORE_FULL, CMD_LAYOUT_LOAD0 = 5100, CMD_LAYOUT_DEL0 = 5150,
+    CMD_GAMES = 5300, CMD_GAME_ADD, CMD_GAME_ADDPATH, CMD_GAME_BACKUP, CMD_GAME_BACKUP_ALL, CMD_GAME_RESTORE, CMD_GAME_REMOVE, CMD_OPEN_VIEWER,
     CMD_TAB0 = 200, CMD_STYLE0 = 300, CMD_THEME0 = 340, CMD_ACCENT0 = 360, CMD_AUTOREM0 = 400, CMD_COLOR0 = 460, CMD_PVBTN0 = 600
 };
-static int g_tab_ctx = 0;
+static int g_tab_ctx = 0, g_safe = 0, g_force_big = 0;
 
 /* ========================================================================== */
 /* PREVIEW ENGINE: text, image, PDF, Word/Excel/PowerPoint, archives, media   */
 /* ========================================================================== */
 enum { PK_NONE, PK_INFO, PK_TEXT, PK_IMAGE, PK_DOC, PK_MEDIA, PK_ARCHIVE, PK_LOADING, PK_ERROR };
-typedef struct { int x, y, w, h, fh; u8 bold, mono, kind, sep, right; u32 col; WCHAR *t; int len; } PRun;   /* kind 0 text,1 fill,2 frame */
+typedef struct { int x, y, w, h, fh; u8 bold, mono, kind, sep, right; u32 col; WCHAR *t; int len; u32 col2; u8 geom, hf, hl, pad; int lw; HBITMAP bm; int bw, bh; } PRun;   /* kind 0 text,1 fill,2 frame,3 picture,6 shape (geom 0 rect,1 ellipse,2 round,3 triangle,4 line,5 diamond) */
 typedef struct { PRun *r; int n, cap; int w, h; u32 bg; WCHAR title[80]; HBITMAP img; int iw, ih; } PPage;
 typedef struct {
     PPage *pg; int npg, cap, cur; int kind, fmt; WCHAR err[220], path[MAX_PATH], info[200];
-    int a_run, a_ch, b_run, b_ch, selecting, havesel; int gen; int canext; int arc_n; u64 arc_total;
+    int a_run, a_ch, b_run, b_ch, selecting, havesel; int gen; int canext; int arc_n; u64 arc_total; int big;
 } PV;
+typedef struct { int n; WCHAR k[12][24], v[12][200]; int isdir; } PInfo;
+static PInfo g_pinfo;
 static PV g_pv;
 typedef struct { int id; RECT r; int en, on; } PBtn;
 typedef struct {
@@ -2661,7 +2893,7 @@ typedef struct {
     int dragv, dragh, dragoff, selecting; int fit_pending; int last_pg; int hot; RECT seek; RECT closeb;
 } PVC;
 static PVC g_pc_panel, g_pc_full;
-enum { PB_PREV = 1, PB_NEXT, PB_ZOUT, PB_ZIN, PB_FIT, PB_ROTL, PB_ROTR, PB_FONT, PB_FULL, PB_COPY, PB_SIZE, PB_EXTRACT, PB_OPENEXT, PB_PLAY, PB_STOP, PB_BACK10, PB_FWD10, PB_CLOSE, PB_ALL, PB_ADDFONT };
+enum { PB_PREV = 1, PB_NEXT, PB_ZOUT, PB_ZIN, PB_FIT, PB_ROTL, PB_ROTR, PB_FONT, PB_FULL, PB_COPY, PB_SIZE, PB_EXTRACT, PB_OPENEXT, PB_PLAY, PB_STOP, PB_BACK10, PB_FWD10, PB_CLOSE, PB_ALL, PB_ADDFONT, PB_LOADBIG, PB_FITPAGE };
 
 /* ---- fonts ---- */
 static const WCHAR *pv_face(void) { return C.doc_font[0] ? C.doc_font : L"Segoe UI"; }
@@ -2688,7 +2920,7 @@ static PRun *pv_run(PPage *p, int kind, int x, int y, int w, int h, int fh, int 
     if (kind == 0 && t) { r->t = (WCHAR *)malloc((len + 1) * sizeof(WCHAR)); memcpy(r->t, t, len * sizeof(WCHAR)); r->t[len] = 0; r->len = len; } return r;
 }
 static void pv_free(void) {
-    PV *v = &g_pv; for (int i = 0; i < v->npg; i++) { for (int k = 0; k < v->pg[i].n; k++) free(v->pg[i].r[k].t); free(v->pg[i].r); if (v->pg[i].img) DeleteObject(v->pg[i].img); }
+    PV *v = &g_pv; for (int i = 0; i < v->npg; i++) { for (int k = 0; k < v->pg[i].n; k++) { free(v->pg[i].r[k].t); if (v->pg[i].r[k].bm) DeleteObject(v->pg[i].r[k].bm); } free(v->pg[i].r); if (v->pg[i].img) DeleteObject(v->pg[i].img); }
     free(v->pg); v->pg = NULL; v->npg = v->cap = v->cur = 0; v->havesel = 0; v->err[0] = 0; v->info[0] = 0; v->canext = 0;
 }
 /* wrap text into lines inside [x, x+maxw]; returns y after last line. sep_first = separator before first run */
@@ -2727,12 +2959,23 @@ static void pv_build_text(const WCHAR *text) {
 }
 /* Office / PDF document -> pages */
 static int pv_is_num(const char *s) { int dig = 0; for (; *s; s++) { if (*s >= '0' && *s <= '9') dig++; else if (*s != '.' && *s != '-' && *s != ',' && *s != '%' && *s != ' ' && *s != '$') return 0; } return dig > 0; }
+static HBITMAP pv_img_from_mem(const u8 *data, size_t n, int *w, int *h, int maxdim);
+static u64 g_pv_img_px;
 static void pv_build_flow(Doc *d) {
+    g_pv_img_px = 0;
     enum { PW = 816, PH = 1056, M = 64 }; int tw = PW - 2 * M; u32 ink = 0x202020; PPage *p = NULL; int y = 0, pn = 0; WCHAR t[40];
     for (int di = 0; di < d->npg; di++) {
         DPage *dp = &d->pg[di]; wfmt(t, 40, L"Page %d", pn + 1); p = pv_newpage(PW, PH, 0xFFFFFF, t); pn++; y = M;
         for (int bi = 0; bi < dp->n; bi++) {
-            DBlock *b = &dp->b[bi]; int n; WCHAR *w = pv_u8(b->text, &n); int fh = 16, bold = b->bold, lh = 23, x = M, sep = 0;
+            DBlock *b = &dp->b[bi];
+            if (b->kind == B_IMG) {
+                double wp = b->w * 96.0 / 72.0, hp = b->h * 96.0 / 72.0; if (wp < 6 || hp < 6) { wp = 220; hp = 150; } if (wp > tw) { hp = hp * tw / wp; wp = tw; } int iw2 = (int)wp, ih2 = (int)hp; if (ih2 > PH - 2 * M) { iw2 = iw2 * (PH - 2 * M) / ih2; ih2 = PH - 2 * M; }
+                if (y + ih2 > PH - M && p->n) { wfmt(t, 40, L"Page %d", pn + 1); p = pv_newpage(PW, PH, 0xFFFFFF, t); pn++; y = M; }
+                int pw0 = 0, ph0 = 0; HBITMAP bm = b->img ? pv_img_from_mem(b->img, b->ilen, &pw0, &ph0, (iw2 > ih2 ? iw2 : ih2) * 2) : NULL;
+                if (bm) { PRun *r = pv_run(p, 3, M, y, iw2, ih2, 0, 0, 0, 0, NULL, 0, 0); r->bm = bm; r->bw = pw0; r->bh = ph0; } else pv_run(p, 2, M, y, iw2, ih2, 0, 0, 0, 0xA0A0A0, NULL, 0, 0);
+                y += ih2 + 8; continue;
+            }
+            int n; WCHAR *w = pv_u8(b->text, &n); int fh = 16, bold = b->bold, lh = 23, x = M, sep = 0;
             if (b->kind == B_H1) { fh = 30; lh = 40; bold = 1; } else if (b->kind == B_H2) { fh = 24; lh = 32; bold = 1; } else if (b->kind == B_H3) { fh = 20; lh = 28; bold = 1; }
             if (b->kind == B_ROW) {
                 int nc = 1; for (int i = 0; i < n; i++) if (w[i] == '\t') nc++; int cw = tw / nc, st = 0, rowh = lh + 8, maxy = 0;
@@ -2786,17 +3029,36 @@ static void pv_build_sheets(Doc *d) {
     g_pv.kind = PK_DOC;
 }
 static void pv_build_slides(Doc *d) {
-    const double SWd = 960.0; u32 ink = 0x202020;
+    const double SWd = 960.0; g_pv_img_px = 0;
     for (int di = 0; di < d->npg; di++) {
         DPage *dp = &d->pg[di]; double k = dp->pw > 1 ? SWd / dp->pw : 1.0; int H = (int)(dp->ph * k); if (H < 200) H = 540;
-        int n; WCHAR *t = pv_u8(dp->title, &n); PPage *p = pv_newpage((int)SWd, H, 0xFFFFFF, t); free(t); int cy = 56, nimg = 0;
+        int n; WCHAR *t = pv_u8(dp->title, &n); u32 bgv = dp->hasbg ? (dp->bg ? dp->bg : 0x000001) : 0xFFFFFF; PPage *p = pv_newpage((int)SWd, H, bgv, t); free(t); int cy = 56, nimg = 0;
+        int bl = (int)((((bgv >> 16) & 255) * 299 + ((bgv >> 8) & 255) * 587 + (bgv & 255) * 114) / 1000); u32 pageink = bl < 140 ? 0xF2F2F2 : 0x202020;
         for (int bi = 0; bi < dp->n; bi++) {
-            DBlock *b = &dp->b[bi]; if (b->kind == B_IMG) { int bx = 560 + nimg * 30, by = H - 160 - nimg * 20; pv_run(p, 2, bx, by, 200, 120, 0, 0, 0, 0xA0A0A0, NULL, 0, 0); pv_run(p, 0, bx + 60, by + 48, 100, 24, 16, 0, 0, 0x808080, L"[picture]", 9, 0); nimg++; continue; }
+            DBlock *b = &dp->b[bi];
+            if (b->kind == B_IMG) {
+                int bx, by, bw, bh; if (b->x >= 0 && b->w > 0 && b->h > 0) { bx = (int)(b->x * k); by = (int)(b->y * k); bw = (int)(b->w * k); bh = (int)(b->h * k); } else { bx = 560 + nimg * 30; by = H - 160 - nimg * 20; bw = 200; bh = 120; nimg++; }
+                if (bw < 2) bw = 2; if (bh < 2) bh = 2; int iw = 0, ih = 0; HBITMAP bm = b->img ? pv_img_from_mem(b->img, b->ilen, &iw, &ih, (bw > bh ? bw : bh) * 2) : NULL;
+                if (bm) { PRun *r = pv_run(p, 3, bx, by, bw, bh, 0, 0, 0, 0, NULL, 0, 0); r->bm = bm; r->bw = iw; r->bh = ih; }
+                else { pv_run(p, 2, bx, by, bw, bh, 0, 0, 0, 0xA0A0A0, NULL, 0, 0); pv_run(p, 0, bx + bw / 2 - 40, by + bh / 2 - 12, 100, 24, 16, 0, 0, 0x808080, L"[picture]", 9, 0); }
+                continue;
+            }
+            int vis = b->kind == B_SHAPE && b->x >= 0 && b->w > 0 && b->h > 0 && (b->hasfill || b->hasline || b->geom == 4);
+            int bx = (int)(b->x * k), by = (int)(b->y * k), bw = (int)(b->w * k), bh = (int)(b->h * k); u32 ink = pageink;
+            if (vis) {
+                PRun *r = pv_run(p, 6, bx, by, bw, bh, 0, 0, 0, b->fill, NULL, 0, 0); r->col2 = b->hasline ? b->line : 0x404040; r->geom = (u8)b->geom; r->hf = (u8)b->hasfill; r->hl = (u8)(b->hasline || b->geom == 4); r->lw = (int)(b->lw * k); if (r->lw < 1) r->lw = 1;
+                if (b->hasfill) { int fl = (int)((((b->fill >> 16) & 255) * 299 + ((b->fill >> 8) & 255) * 587 + (b->fill & 255) * 114) / 1000); ink = fl < 140 ? 0xFFFFFF : 0x202020; }
+            }
+            if (!b->text[0]) continue;
             WCHAR *w = pv_u8(b->text, &n); int title = b->bold || b->size > 0; int fh = title ? 40 : 24, lh = fh + (title ? 10 : 8);
             int x = 48, y = cy, mw = 864;
-            if (b->x >= 0) { x = (int)(b->x * k); y = (int)(b->y * k); mw = b->w > 20 ? (int)(b->w * k) : 864; if (mw < 100) mw = 100; if (mw > (int)SWd - x - 10) mw = (int)SWd - x - 10; if (mw < 100) mw = 100; if (b->w > 0 && b->h > 0 && b->h * k < 60) fh = 20, lh = 26; }
-            int ny = pv_wrap(p, w, n, x, y, mw, fh, title, 0, ink, lh, 0, NULL); if (b->x < 0) cy = ny + 16; free(w);
-            if (ny > H) { /* grow slide if text overflows */ p->h = ny + 20; }
+            if (b->x >= 0) { x = bx; y = by; mw = b->w > 20 ? bw : 864; if (mw < 100) mw = 100; if (mw > (int)SWd - x - 10) mw = (int)SWd - x - 10; if (mw < 100) mw = 100; if (b->w > 0 && b->h > 0 && b->h * k < 60) fh = 20, lh = 26; }
+            int centred = vis && b->hasfill && b->w > 0 && b->h > 0; int inset = centred ? 8 : 0; int i0 = p->n;
+            if (centred) { fh = bh < 60 ? 18 : 22; lh = fh + 6; title = 0; }
+            int ny = pv_wrap(p, w, n, x + inset, y + (centred ? 4 : 0), mw - 2 * inset, fh, title, 0, ink, lh, 0, NULL); free(w);
+            if (centred) { int blk = ny - (y + 4), dy = (bh - blk) / 2 - 4; if (dy < 0) dy = 0; for (int q = i0; q < p->n; q++) { PRun *r = &p->r[q]; r->x += (mw - 2 * inset - r->w) / 2; r->y += dy; } }
+            else if (b->x < 0) cy = ny + 16;
+            if (ny > H) { p->h = ny + 20; }
         }
     }
     g_pv.kind = PK_DOC;
@@ -2835,6 +3097,12 @@ static HBITMAP gdip_load_dib(const WCHAR *path, int maxdim, int *ow, int *oh) {
     HDC m = CreateCompatibleDC(NULL); HGDIOBJ o = SelectObject(m, bm); RECT r = { 0, 0, w, h }; fillr(m, &r, RGB(255, 255, 255));
     void *g = NULL; G.FromHDC(m, &g); if (g) { G.Interp(g, 7); G.Draw(g, img, 0, 0, w, h); G.DelG(g); } SelectObject(m, o); DeleteDC(m); G.DelI(img); *ow = w; *oh = h; return bm;
 }
+static HBITMAP pv_img_from_mem(const u8 *data, size_t n, int *w, int *h, int maxdim) {
+    if (!data || !n || !G.ok || g_pv_img_px > 60000000ull) return NULL; if (maxdim < 32) maxdim = 32; if (maxdim > 1600) maxdim = 1600;
+    WCHAR tmp[MAX_PATH]; path_join(tmp, MAX_PATH, CONFIG_DIR, L"pv_img.tmp"); HANDLE f = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (f == INVALID_HANDLE_VALUE) return NULL;
+    DWORD wr = 0; BOOL ok = WriteFile(f, data, (DWORD)n, &wr, NULL); CloseHandle(f); HBITMAP bm = NULL; if (ok && wr == n) bm = gdip_load_dib(tmp, maxdim, w, h); DeleteFileW(tmp);
+    if (bm) g_pv_img_px += (u64)(*w) * (u64)(*h); return bm;
+}
 static void pv_build_image(const WCHAR *path) {
     int w, h; HBITMAP b = gdip_load_dib(path, 3200, &w, &h);
     if (!b) { g_pv.kind = PK_ERROR; scpy(g_pv.err, 220, L"This image format cannot be decoded here"); return; }
@@ -2860,11 +3128,12 @@ static void pv_clamp(PVC *c) {
     int w, h; pv_dims(c, &w, &h); int m = px(10), vw = c->view.right - c->view.left, vh = c->view.bottom - c->view.top;
     int mx = w + 2 * m - vw, my = h + 2 * m - vh; if (mx < 0) mx = 0; if (my < 0) my = 0; if (c->sx > mx) c->sx = mx; if (c->sy > my) c->sy = my; if (c->sx < 0) c->sx = 0; if (c->sy < 0) c->sy = 0;
 }
-static void pv_fit(PVC *c) {
+static void pv_fit_ex(PVC *c, int whole) {
     PPage *p = pv_page(); if (!p || !p->w) return; int vw = c->view.right - c->view.left - 2 * px(10) - px(12), vh = c->view.bottom - c->view.top - 2 * px(10);
-    int pw = (c->rot & 1) ? p->h : p->w; int z = vw * 100 / (pw ? pw : 1); if (g_pv.kind == PK_IMAGE) { int ph = (c->rot & 1) ? p->w : p->h; int z2 = vh * 100 / (ph ? ph : 1); if (z2 < z) z = z2; }
+    int pw = (c->rot & 1) ? p->h : p->w; int z = vw * 100 / (pw ? pw : 1); if (g_pv.kind == PK_IMAGE || whole) { int ph = (c->rot & 1) ? p->w : p->h; int z2 = vh * 100 / (ph ? ph : 1); if (z2 < z) z = z2; }
     if (z < 25) z = 25; if (z > 400) z = 400; c->zoom = z; c->sx = c->sy = 0; pv_clamp(c);
 }
+static void pv_fit(PVC *c) { pv_fit_ex(c, 0); }
 static void pv_set_zoom(PVC *c, int z, int cx, int cy) {
     if (z < 25) z = 25; if (z > 400) z = 400; if (z == c->zoom) return; int oz = c->zoom;
     int ax = c->sx + cx - c->view.left, ay = c->sy + cy - c->view.top; c->zoom = z; c->sx = ax * z / oz - (cx - c->view.left); c->sy = ay * z / oz - (cy - c->view.top); pv_clamp(c);
@@ -2896,22 +3165,39 @@ static void pv_glyph(HDC dc, int id, const RECT *r, COLORREF c) {
     case PB_CLOSE: linec(dc, cx - s, cy - s, cx + s + 1, cy + s + 1, c, 2); linec(dc, cx - s, cy + s, cx + s + 1, cy - s - 1, c, 2); break;
     case PB_ALL: { RECT a = { cx - s, cy - s, cx + s, cy + s }; framer(dc, &a, c); linec(dc, cx - s + 2, cy, cx + s - 2, cy, c, 1); break; }
     case PB_ADDFONT: linec(dc, cx - s, cy, cx + s + 1, cy, c, 2); linec(dc, cx, cy - s, cx, cy + s + 1, c, 2); break;
+    case PB_LOADBIG: t[0] = (POINT){ cx - s / 2, cy - s }; t[1] = (POINT){ cx - s / 2, cy + s }; t[2] = (POINT){ cx + s, cy }; poly(dc, t, 3, c); break;
+    case PB_FITPAGE: { RECT a = { cx - s, cy - s - 1, cx + s, cy + s + 2 }; framer(dc, &a, c); linec(dc, cx - s + 2, cy - s + 2, cx + s - 2, cy - s + 2, c, 1); linec(dc, cx - s + 2, cy + 1, cx + s - 2, cy + 1, c, 1); break; }
     }
 }
 static const WCHAR *pv_btn_tip(int id) {
-    switch (id) { case PB_PREV: return L"Previous page"; case PB_NEXT: return L"Next page"; case PB_ZOUT: return L"Zoom out"; case PB_ZIN: return L"Zoom in"; case PB_FIT: return L"Fit to width"; case PB_ROTL: return L"Rotate left"; case PB_ROTR: return L"Rotate right";
+    switch (id) { case PB_PREV: return L"Previous page"; case PB_NEXT: return L"Next page"; case PB_ZOUT: return L"Zoom out"; case PB_ZIN: return L"Zoom in"; case PB_FIT: return L"Fit to width"; case PB_FITPAGE: return L"Fit whole page / image in the panel"; case PB_LOADBIG: return L"Load the preview anyway"; case PB_ROTL: return L"Rotate left"; case PB_ROTR: return L"Rotate right";
     case PB_FONT: return L"Document font"; case PB_FULL: return L"Full screen preview"; case PB_COPY: return L"Copy selected text (or whole page)"; case PB_SIZE: return L"Preview size: min / mid / large"; case PB_EXTRACT: return L"Extract archive"; case PB_OPENEXT: return L"Open with default app";
     case PB_PLAY: return L"Play / pause"; case PB_STOP: return L"Stop"; case PB_BACK10: return L"Back 10 s"; case PB_FWD10: return L"Forward 10 s"; case PB_CLOSE: return L"Close"; case PB_ALL: return L"Select all text"; } return L"";
 }
 static int vid_is_video(void);
+/* ---- external player (auto-detected) ---- */
+static int find_ext_player(WCHAR *out) {
+    if (C.video_player[0] && path_exists(C.video_player)) { scpy(out, MAX_PATH, C.video_player); return 1; }
+    static const WCHAR *cand[] = { L"%ProgramFiles%\\VideoLAN\\VLC\\vlc.exe", L"%ProgramFiles(x86)%\\VideoLAN\\VLC\\vlc.exe", L"%ProgramW6432%\\VideoLAN\\VLC\\vlc.exe", L"%ProgramFiles%\\mpv\\mpv.exe", L"%ProgramFiles%\\MPC-HC\\mpc-hc64.exe", L"%ProgramFiles(x86)%\\MPC-HC\\mpc-hc.exe",
+        L"%ProgramFiles%\\SMPlayer\\smplayer.exe", L"%ProgramFiles%\\Windows Media Player\\wmplayer.exe", L"%ProgramFiles(x86)%\\Windows Media Player\\wmplayer.exe", L"C:\\Program Files\\VideoLAN\\VLC\\vlc.exe", L"C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe", NULL };
+    for (int i = 0; cand[i]; i++) { WCHAR b[MAX_PATH]; ExpandEnvironmentStringsW(cand[i], b, MAX_PATH); if (b[0] != '%' && path_exists(b)) { scpy(out, MAX_PATH, b); return 1; } }
+    WCHAR exe[MAX_PATH], dir[MAX_PATH]; GetModuleFileNameW(NULL, exe, MAX_PATH); parent_of(exe, dir); static const WCHAR *nm[] = { L"vlc.exe", L"mpv.exe", L"mpc-hc64.exe", L"mpc-hc.exe", L"ffplay.exe", L"smplayer.exe", NULL };
+    for (int i = 0; nm[i]; i++) { WCHAR b[MAX_PATH]; path_join(b, MAX_PATH, dir, nm[i]); if (path_exists(b)) { scpy(out, MAX_PATH, b); return 1; } lstrcpyW(b, nm[i]); if (PathFindOnPathW(b, NULL)) { scpy(out, MAX_PATH, b); return 1; } } return 0;
+}
+static void play_external(const WCHAR *path) {
+    WCHAR pl[MAX_PATH], dir[MAX_PATH]; parent_of(path, dir);
+    if (find_ext_player(pl)) { WCHAR a[MAX_PATH + 4]; wfmt(a, MAX_PATH + 4, L"\"%ls\"", path); ShellExecuteW(S.hwnd, L"open", pl, a, dir[0] ? dir : NULL, SW_SHOWNORMAL); }
+    else { HINSTANCE r = ShellExecuteW(S.hwnd, L"open", path, NULL, dir[0] ? dir : NULL, SW_SHOWNORMAL); if ((INT_PTR)r <= 32) toast(L"No video player found - install VLC/mpv or choose one in Settings > Preview"); }
+}
 static void pv_layout(PVC *c, RECT area, int full) {
     c->area = area; c->full = full; c->nb = 0; int pad = full ? px(14) : px(10), bs = px(full ? 34 : 28), gap = px(4);
     int hh = full ? px(44) : px(54); c->hdr = (RECT){ area.left + pad, area.top + px(8), area.right - pad - (full ? px(50) : 0), area.top + px(8) + hh };
     int tx = area.left + pad, ty = c->hdr.bottom + px(2); int maxx = area.right - pad - (full ? px(56) : 0);
     PV *v = &g_pv; int ids[20], n = 0;
-    if (v->kind == PK_DOC || v->kind == PK_IMAGE) { if (v->npg > 1) { ids[n++] = PB_PREV; ids[n++] = PB_NEXT; } ids[n++] = PB_ZOUT; ids[n++] = PB_ZIN; ids[n++] = PB_FIT; ids[n++] = PB_ROTL; ids[n++] = PB_ROTR; if (v->kind == PK_DOC) { ids[n++] = PB_FONT; ids[n++] = PB_COPY; } }
-    else if (v->kind == PK_TEXT || v->kind == PK_ARCHIVE) { ids[n++] = PB_ZOUT; ids[n++] = PB_ZIN; ids[n++] = PB_FIT; ids[n++] = PB_FONT; ids[n++] = PB_COPY; if (v->kind == PK_ARCHIVE) ids[n++] = PB_EXTRACT; }
+    if (v->kind == PK_DOC || v->kind == PK_IMAGE) { if (v->npg > 1) { ids[n++] = PB_PREV; ids[n++] = PB_NEXT; } ids[n++] = PB_ZOUT; ids[n++] = PB_ZIN; ids[n++] = PB_FIT; ids[n++] = PB_FITPAGE; ids[n++] = PB_ROTL; ids[n++] = PB_ROTR; if (v->kind == PK_DOC) { ids[n++] = PB_FONT; ids[n++] = PB_COPY; } }
+    else if (v->kind == PK_TEXT || v->kind == PK_ARCHIVE) { ids[n++] = PB_ZOUT; ids[n++] = PB_ZIN; ids[n++] = PB_FIT; ids[n++] = PB_FITPAGE; ids[n++] = PB_FONT; ids[n++] = PB_COPY; if (v->kind == PK_ARCHIVE) ids[n++] = PB_EXTRACT; }
     else if (v->kind == PK_MEDIA) { ids[n++] = PB_OPENEXT; }
+    else if (v->kind == PK_ERROR) { if (v->big) ids[n++] = PB_LOADBIG; ids[n++] = PB_OPENEXT; }
     if (v->kind != PK_NONE && v->kind != PK_INFO && !full) ids[n++] = PB_SIZE; if (v->kind != PK_NONE && !full && (v->kind == PK_INFO)) { n = 0; }
     if (!full && v->kind >= PK_TEXT && v->kind != PK_LOADING && v->kind != PK_ERROR) ids[n++] = PB_FULL;
     int x = tx, y = ty, rows = 1;
@@ -2935,7 +3221,7 @@ static void pv_layout(PVC *c, RECT area, int full) {
     pv_clamp(c);
 }
 /* ---- media (MCI via winmm, loaded dynamically) ---- */
-static struct { int open, playing, video; HWND host; WCHAR path[MAX_PATH]; int len; DWORD pos; int err; WCHAR errmsg[160]; } g_vid;
+static struct { int open, playing, video; HWND host; WCHAR path[MAX_PATH]; int len; DWORD pos; int err; WCHAR errmsg[160]; DWORD prime; RECT last; } g_vid;
 static DWORD (WINAPI *p_mci)(LPCWSTR, LPWSTR, UINT, HWND); static BOOL (WINAPI *p_mcierr)(DWORD, LPWSTR, UINT);
 static int mci_init(void) {
     if (p_mci) return 1; HMODULE m = LoadLibraryW(L"winmm.dll"); if (!m) return 0; *(FARPROC *)&p_mci = GetProcAddress(m, "mciSendStringW"); *(FARPROC *)&p_mcierr = GetProcAddress(m, "mciGetErrorStringW"); return p_mci != NULL;
@@ -2949,27 +3235,29 @@ static void vid_close(void) {
     if (g_vid.open) { mci_cmd(L"stop fmvid", NULL, 0); mci_cmd(L"close fmvid", NULL, 0); g_vid.open = 0; } g_vid.playing = 0;
     if (g_vid.host) { DestroyWindow(g_vid.host); g_vid.host = NULL; } KillTimer(S.hwnd, TIMER_VID);
 }
-static void vid_place(const RECT *r) { if (g_vid.host && g_vid.open) { MoveWindow(g_vid.host, r->left, r->top, r->right - r->left, r->bottom - r->top, TRUE); WCHAR c[120]; wfmt(c, 120, L"put fmvid destination at 0 0 %d %d", r->right - r->left, r->bottom - r->top); if (g_vid.video) mci_cmd(c, NULL, 0); } }
+static void vid_place(const RECT *r) { if (g_vid.host && g_vid.open) { if (EqualRect(&g_vid.last, r)) return; g_vid.last = *r; MoveWindow(g_vid.host, r->left, r->top, r->right - r->left, r->bottom - r->top, TRUE); WCHAR c[120]; wfmt(c, 120, L"put fmvid destination at 0 0 %d %d", r->right - r->left, r->bottom - r->top); if (g_vid.video) mci_cmd(c, NULL, 0); } }
 static int vid_open(const WCHAR *path, HWND parent, const RECT *area, int is_video) {
     static int reg; if (!reg) { reg = 1; WNDCLASSEXW wc; memset(&wc, 0, sizeof wc); wc.cbSize = sizeof wc; wc.lpfnWndProc = vidhost_proc; wc.hInstance = GetModuleHandleW(NULL); wc.lpszClassName = L"WinShellFM.VidHost"; wc.hCursor = LoadCursorW(NULL, IDC_ARROW); RegisterClassExW(&wc); }
     vid_close(); g_vid.err = 0; g_vid.errmsg[0] = 0; g_vid.video = is_video; scpy(g_vid.path, MAX_PATH, path);
-    if (is_video) g_vid.host = CreateWindowExW(0, L"WinShellFM.VidHost", L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN, area->left, area->top, area->right - area->left, area->bottom - area->top, parent, NULL, GetModuleHandleW(NULL), NULL);
+    if (is_video) g_vid.host = CreateWindowExW(0, L"WinShellFM.VidHost", L"", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, area->left, area->top, area->right - area->left, area->bottom - area->top, parent, NULL, GetModuleHandleW(NULL), NULL);
     WCHAR cmd[MAX_PATH + 120];
     if (is_video) wfmt(cmd, MAX_PATH + 120, L"open \"%ls\" type mpegvideo alias fmvid style child parent %lu", path, (unsigned long)(ULONG_PTR)g_vid.host);
     else wfmt(cmd, MAX_PATH + 120, L"open \"%ls\" alias fmvid", path);
     int e = mci_cmd(cmd, NULL, 0);
     if (e && is_video) { wfmt(cmd, MAX_PATH + 120, L"open \"%ls\" alias fmvid style child parent %lu", path, (unsigned long)(ULONG_PTR)g_vid.host); e = mci_cmd(cmd, NULL, 0); }
+    if (e && is_video) { wfmt(cmd, MAX_PATH + 120, L"open \"%ls\" type avivideo alias fmvid style child parent %lu", path, (unsigned long)(ULONG_PTR)g_vid.host); e = mci_cmd(cmd, NULL, 0); }
+    if (e && is_video) { wfmt(cmd, MAX_PATH + 120, L"open \"%ls\" type mpegvideo alias fmvid", path); e = mci_cmd(cmd, NULL, 0); }
     if (e) { g_vid.err = e; if (g_vid.host) { DestroyWindow(g_vid.host); g_vid.host = NULL; } return 0; }
     g_vid.open = 1; mci_cmd(L"set fmvid time format milliseconds", NULL, 0); WCHAR r[40] = L""; if (!mci_cmd(L"status fmvid length", r, 40)) g_vid.len = _wtoi(r);
-    if (is_video) { vid_place(area); mci_cmd(L"seek fmvid to start", NULL, 0); mci_cmd(L"window fmvid state show", NULL, 0); }
-    SetTimer(S.hwnd, TIMER_VID, 400, NULL); return 1;
+    if (is_video) { vid_place(area); mci_cmd(L"window fmvid state show", NULL, 0); mci_cmd(L"setaudio fmvid off", NULL, 0); mci_cmd(L"play fmvid", NULL, 0); g_vid.prime = GetTickCount(); if (!g_vid.prime) g_vid.prime = 1; }   /* play muted for a moment so the first frame is drawn (no black box) */
+    SetTimer(S.hwnd, TIMER_VID, is_video ? 120 : 400, NULL); return 1;
 }
 static void vid_poll(void) {
-    if (!g_vid.open) return; WCHAR r[40] = L""; if (!mci_cmd(L"status fmvid position", r, 40)) g_vid.pos = (DWORD)_wtoi(r);
+    if (!g_vid.open) return; if (g_vid.prime && GetTickCount() - g_vid.prime > 450) { g_vid.prime = 0; mci_cmd(L"pause fmvid", NULL, 0); mci_cmd(L"seek fmvid to start", NULL, 0); mci_cmd(L"setaudio fmvid on", NULL, 0); mci_cmd(L"update fmvid", NULL, 0); SetTimer(S.hwnd, TIMER_VID, 400, NULL); } WCHAR r[40] = L""; if (!mci_cmd(L"status fmvid position", r, 40)) g_vid.pos = (DWORD)_wtoi(r);
     r[0] = 0; if (!mci_cmd(L"status fmvid mode", r, 40)) g_vid.playing = !wcscmp(r, L"playing");
 }
 static void vid_toggle(void) {
-    if (!g_vid.open) return; vid_poll();
+    if (!g_vid.open) return; if (g_vid.prime) { g_vid.prime = 0; mci_cmd(L"setaudio fmvid on", NULL, 0); mci_cmd(L"seek fmvid to start", NULL, 0); mci_cmd(L"play fmvid", NULL, 0); vid_poll(); return; } vid_poll();
     if (g_vid.playing) mci_cmd(L"pause fmvid", NULL, 0); else { if (g_vid.len && g_vid.pos + 200 >= (DWORD)g_vid.len) mci_cmd(L"seek fmvid to start", NULL, 0); mci_cmd(L"play fmvid", NULL, 0); }
     vid_poll();
 }
@@ -2993,6 +3281,21 @@ static void pv_draw_page(HDC dc, PVC *c, PPage *p, int ox, int oy, const RECT *c
         PRun *r = &p->r[i]; int x = ox + r->x * z / 100, y = oy + r->y * z / 100, w = r->w * z / 100, h = r->h * z / 100; if (r->kind != 0 && w < 1) w = 1; if (h < 1) h = 1;
         if (x > clip->right || x + w < clip->left - 4 || y > clip->bottom || y + h < clip->top) continue;
         COLORREF col = r->col == 0xFFFFFFFF ? pl->text : r->col == 0xFFFFFFFE ? pl->dim : RGBH(r->col);
+        if (r->kind == 3) {
+            if (r->bm) { HDC m = CreateCompatibleDC(dc); HGDIOBJ ob = SelectObject(m, r->bm); int om = SetStretchBltMode(dc, HALFTONE); SetBrushOrgEx(dc, 0, 0, NULL); StretchBlt(dc, x, y, w, h, m, 0, 0, r->bw, r->bh, SRCCOPY); SetStretchBltMode(dc, om); SelectObject(m, ob); DeleteDC(m); }
+            else { RECT q = { x, y, x + w, y + h }; framer(dc, &q, RGB(160, 160, 160)); }
+            continue; }
+        if (r->kind == 6) {
+            int lw = r->lw * z / 100; if (lw < 1) lw = 1; HBRUSH br = r->hf ? CreateSolidBrush(RGBH(r->col)) : (HBRUSH)GetStockObject(NULL_BRUSH); HPEN pen = r->hl ? CreatePen(PS_SOLID, lw, RGBH(r->col2)) : (HPEN)GetStockObject(NULL_PEN);
+            HGDIOBJ ob = SelectObject(dc, br), op = SelectObject(dc, pen); POINT pt[4];
+            switch (r->geom) {
+            case 1: Ellipse(dc, x, y, x + w + 1, y + h + 1); break;
+            case 2: { int rr = (w < h ? w : h) / 5; RoundRect(dc, x, y, x + w + 1, y + h + 1, rr, rr); break; }
+            case 3: pt[0].x = x + w / 2; pt[0].y = y; pt[1].x = x + w; pt[1].y = y + h; pt[2].x = x; pt[2].y = y + h; Polygon(dc, pt, 3); break;
+            case 5: pt[0].x = x + w / 2; pt[0].y = y; pt[1].x = x + w; pt[1].y = y + h / 2; pt[2].x = x + w / 2; pt[2].y = y + h; pt[3].x = x; pt[3].y = y + h / 2; Polygon(dc, pt, 4); break;
+            case 4: MoveToEx(dc, x, y, NULL); LineTo(dc, x + w, y + h); break;
+            default: Rectangle(dc, x, y, x + w + 1, y + h + 1); break; }
+            SelectObject(dc, ob); SelectObject(dc, op); if (r->hf) DeleteObject(br); if (r->hl) DeleteObject(pen); continue; }
         if (r->kind == 1) { fill4(dc, x, y, x + w, y + h, col); continue; }
         if (r->kind == 2) { RECT q = { x, y, x + w, y + h }; framer(dc, &q, col); continue; }
         HFONT f = pv_font(r->fh * z / 100, r->bold, r->mono); HGDIOBJ of = SelectObject(dc, f);
@@ -3080,15 +3383,20 @@ static int arc_kind_of(const WCHAR *p) {
 /* ---- external tools ---- */
 static int find_tool(const WCHAR *const *names, WCHAR *out) {
     WCHAR exe[MAX_PATH], dir[MAX_PATH]; GetModuleFileNameW(NULL, exe, MAX_PATH); parent_of(exe, dir);
-    static const WCHAR *pf[] = { L"%ProgramFiles%\\7-Zip", L"%ProgramFiles(x86)%\\7-Zip", L"%ProgramFiles%\\WinRAR", L"%ProgramFiles(x86)%\\WinRAR", L"C:\\Program Files\\7-Zip", L"C:\\Program Files\\WinRAR" };
+    static const WCHAR *pf[] = { L"%ProgramFiles%\\7-Zip", L"%ProgramFiles(x86)%\\7-Zip", L"%ProgramW6432%\\7-Zip", L"%ProgramFiles%\\WinRAR", L"%ProgramFiles(x86)%\\WinRAR", L"%ProgramW6432%\\WinRAR", L"C:\\Program Files\\7-Zip", L"C:\\Program Files\\WinRAR", L"C:\\Program Files (x86)\\7-Zip", L"C:\\Program Files (x86)\\WinRAR", L"Z:\\opt\\7-Zip" };
+    WCHAR rg[8][MAX_PATH]; int nrg = 0;     /* install folders recorded in the registry (32-bit and 64-bit views) */
+    { static const WCHAR *keys[] = { L"SOFTWARE\\7-Zip", L"SOFTWARE\\7-Zip", L"SOFTWARE\\WinRAR", L"SOFTWARE\\WinRAR" }; static const WCHAR *vals[] = { L"Path", L"Path64", L"exe64", L"exe32" };
+      for (int v = 0; v < 4; v++) for (int view = 0; view < 2 && nrg < 8; view++) { HKEY k; DWORD sam = KEY_READ | (view ? 0x0200 : 0x0100); /* WOW64_32KEY / WOW64_64KEY */ WCHAR val[MAX_PATH]; DWORD sz = sizeof val, ty = 0; val[0] = 0;
+          if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keys[v], 0, sam, &k) == ERROR_SUCCESS) { if (RegQueryValueExW(k, vals[v], NULL, &ty, (BYTE*)val, &sz) == ERROR_SUCCESS && ty == 1 && val[0]) { if (v >= 2) { WCHAR d[MAX_PATH]; parent_of(val, d); scpy(rg[nrg++], MAX_PATH, d[0] ? d : val); } else scpy(rg[nrg++], MAX_PATH, val); } RegCloseKey(k); } } }
     for (int i = 0; names[i]; i++) {
         path_join(out, MAX_PATH, dir, names[i]); if (path_exists(out)) return 1;
-        for (int k = 0; k < 6; k++) { WCHAR b[MAX_PATH]; ExpandEnvironmentStringsW(pf[k], b, MAX_PATH); path_join(out, MAX_PATH, b, names[i]); if (path_exists(out)) return 1; }
+        for (int k = 0; k < nrg; k++) { path_join(out, MAX_PATH, rg[k], names[i]); if (path_exists(out)) return 1; }
+        for (int k = 0; k < 11; k++) { WCHAR b[MAX_PATH]; ExpandEnvironmentStringsW(pf[k], b, MAX_PATH); path_join(out, MAX_PATH, b, names[i]); if (path_exists(out)) return 1; }
         WCHAR f[MAX_PATH]; lstrcpyW(f, names[i]); if (PathFindOnPathW(f, NULL)) { lstrcpyW(out, f); return 1; }
     } return 0;
 }
 static int find_7z(WCHAR *o) { static const WCHAR *n[] = { L"7z.exe", L"7za.exe", L"7zr.exe", NULL }; return find_tool(n, o); }
-static int find_rar(WCHAR *o) { static const WCHAR *n[] = { L"rar.exe", L"WinRAR.exe", NULL }; return find_tool(n, o); }
+static int find_rar(WCHAR *o) { static const WCHAR *n[] = { L"rar.exe", L"UnRAR.exe", L"WinRAR.exe", NULL }; return find_tool(n, o); }
 /* run a command line, capture stdout (up to cap bytes), returns exit code or -1 */
 static int run_capture(WCHAR *cmdline, char **out, size_t *outn, DWORD timeout) {
     SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE }; HANDLE rd = NULL, wr = NULL; if (!CreatePipe(&rd, &wr, &sa, 0)) return -1; SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
@@ -3224,8 +3532,8 @@ static void start_compress(const WCHAR *fmt) {
 static void pv_ctx_redraw(PVC *c);
 static int g_pv_cls = -1, g_pv_override;
 static const WCHAR *PV_TEXT = L".txt.md.log.ini.cfg.json.xml.csv.tsv.c.h.cpp.hpp.cc.py.js.ts.tsx.jsx.html.htm.css.bat.cmd.sh.yaml.yml.lua.java.rs.go.conf.inf.reg.srt.toml.properties.php.sql.rb.cs.vb.ps1.tex.rtf.diff.patch.gitignore.";
-static const WCHAR *PV_VIDEO = L".mp4.avi.wmv.mkv.mov.mpg.mpeg.m4v.webm.flv.3gp.mp3.wav.wma.m4a.ogg.flac.aac.mid.midi.";
-static int pv_is_audio(const WCHAR *p) { return ext_in(p, L".mp3.wav.wma.m4a.ogg.flac.aac.mid.midi."); }
+static const WCHAR *PV_VIDEO = L".mp4.avi.wmv.mkv.mov.mpg.mpeg.m4v.webm.flv.3gp.3g2.ts.m2ts.mts.vob.ogv.asf.divx.rm.rmvb.f4v.mxf.qt.mp3.wav.wma.m4a.ogg.flac.aac.mid.midi.opus.mka.ape.wv.amr.aif.aiff.";
+static int pv_is_audio(const WCHAR *p) { return ext_in(p, L".mp3.wav.wma.m4a.ogg.flac.aac.mid.midi.opus.mka.ape.wv.amr.aif.aiff."); }
 /* class: 0 text 1 image 2 video 3 pdf 4 word 5 excel 6 ppt 7 archive, -1 none */
 static int pv_class(const WCHAR *p) {
     if (ext_in(p, PV_TEXT)) return 0; if (is_image(p)) return 1; if (ext_in(p, PV_VIDEO)) return 2; if (ext_in(p, L".pdf.")) return 3; if (ext_in(p, L".docx.")) return 4;
@@ -3268,13 +3576,28 @@ static void pv_load_archive(const WCHAR *path) {
 }
 static void preview_free(void) { vid_close(); pv_free(); pv_font_reset(); g_pv.kind = PK_NONE; }
 static void pv_reset_view(PVC *c) { c->zoom = 100; c->rot = 0; c->sx = c->sy = 0; c->fit_pending = 1; c->dragv = c->dragh = 0; }
+static void dir_size_walk(const WCHAR *dir, u64 *sz, int *nf, int *nd, int *budget, int depth);
+static void pv_info_add(const WCHAR *k, const WCHAR *v) { PInfo *I = &g_pinfo; if (I->n >= 12) return; scpy(I->k[I->n], 24, k); scpy(I->v[I->n], 200, v); I->n++; }
+static void pv_build_info(const Item *it) {
+    PInfo *I = &g_pinfo; I->n = 0; I->isdir = it->dir; WCHAR b[260], s[40]; pv_info_add(L"Name", it->name); pv_info_add(L"Type", it->kind == 1 ? it->type : (it->dir ? L"File folder" : it->type));
+    WCHAR par[MAX_PATH]; parent_of(it->path, par); if (it->kind != 1) pv_info_add(L"Location", par[0] ? par : L"-");
+    if (it->kind == 1) { fmt_bytes(it->size, s, 40); pv_info_add(L"Capacity", s); fmt_bytes(it->freeb, s, 40); pv_info_add(L"Free space", s); fmt_bytes(it->size > it->freeb ? it->size - it->freeb : 0, s, 40); pv_info_add(L"Used", s); return; }
+    if (it->dir) { u64 sz = 0; int nf = 0, nd = 0, bud = 4000; dir_size_walk(it->path, &sz, &nf, &nd, &bud, 0); fmt_bytes(sz, s, 40); wfmt(b, 260, L"%ls%ls", s, bud <= 0 ? L" (partial)" : L""); pv_info_add(L"Size", b); wfmt(b, 260, L"%d files, %d folders%ls", nf, nd, bud <= 0 ? L"+" : L""); pv_info_add(L"Contains", b); }
+    else { fmt_bytes(it->size, s, 40); wfmt(b, 260, L"%ls (%I64u bytes)", s, (unsigned long long)it->size); pv_info_add(L"Size", b); const WCHAR *e = PathFindExtensionW(it->name); if (*e) { WCHAR x[24]; scpy(x, 24, e + 1); CharUpperW(x); pv_info_add(L"Extension", x); } }
+    WIN32_FILE_ATTRIBUTE_DATA ad; if (GetFileAttributesExW(it->path, GetFileExInfoStandard, &ad)) { fmt_date(&ad.ftCreationTime, b, 260); pv_info_add(L"Created", b); fmt_date(&ad.ftLastWriteTime, b, 260); pv_info_add(L"Modified", b);
+        wfmt(b, 260, L"%ls%ls%ls%ls", ad.dwFileAttributes & FILE_ATTRIBUTE_READONLY ? L"Read-only  " : L"", ad.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN ? L"Hidden  " : L"", ad.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM ? L"System  " : L"", ad.dwFileAttributes & FILE_ATTRIBUTE_ARCHIVE ? L"Archive" : L""); pv_info_add(L"Attributes", b[0] ? b : L"Normal"); }
+    if (!it->dir) pv_info_add(L"Preview", L"Not available for this type - double-click to open it");
+}
 static void preview_update(void) {
     preview_free(); Tab *t = curtab(); Item *it = NULL; int ns = sel_count(t, NULL);
     if (ns == 1) for (int i = 0; i < t->n; i++) if (t->it[i].sel) { it = &t->it[i]; break; }
+    static Item vit; if (g_viewer && g_vfile[0]) { WIN32_FIND_DATAW fd; HANDLE fh = FindFirstFileW(g_vfile, &fd); memset(&vit, 0, sizeof vit); if (fh != INVALID_HANDLE_VALUE) { FindClose(fh); WCHAR par[MAX_PATH]; parent_of(g_vfile, par); item_from_fd(&vit, par, &fd); scpy(vit.path, MAX_PATH, g_vfile); it = &vit; } }
     S.prev.path[0] = 0; g_pv.path[0] = 0; if (!it) { g_pv_cls = -1; return; }
     scpy(S.prev.path, MAX_PATH, it->path); scpy(S.prev.type, 64, it->type); S.prev.size = it->size; S.prev.mt = it->mt; S.prev.dir = it->dir; scpy(g_pv.path, MAX_PATH, it->path);
-    pv_reset_view(&g_pc_panel); g_pv.kind = PK_INFO; if (it->dir || it->kind == 1) { g_pv_cls = -1; return; }
-    int cls = pv_class(it->path); if (cls != g_pv_cls) g_pv_override = 0; g_pv_cls = cls; if (cls < 0 || !C.show_preview) { if (cls < 0) { if (it->size > 0 && it->size < (4u << 20)) { /* sniff unknown files as text */ WCHAR *w = load_text_file(it->path);
+    pv_reset_view(&g_pc_panel); g_pv.kind = PK_INFO; g_pv.big = 0; pv_build_info(it); if (it->dir || it->kind == 1) { g_pv_cls = -1; return; }
+    if (g_safe) { g_pv_cls = -1; return; }
+    int cls = pv_class(it->path);
+    if (cls >= 0 && cls != 2 && cls != 0 && !g_force_big && it->size > ((u64)C.pv_limit_mb << 20)) { WCHAR m[200], s[40]; fmt_bytes(it->size, s, 40); wfmt(m, 200, L"This file is large (%ls). The preview was skipped to keep the app fast and stable.", s); g_pv_cls = cls; pv_set_err(m); g_pv.big = 1; return; } if (cls != g_pv_cls) g_pv_override = 0; g_pv_cls = cls; if (cls < 0 || !C.show_preview) { if (cls < 0) { if (it->size > 0 && it->size < (4u << 20)) { /* sniff unknown files as text */ WCHAR *w = load_text_file(it->path);
         if (w) { int bin = 0; for (int i = 0; w[i] && i < 2000; i++) if (w[i] < 9 || (w[i] > 13 && w[i] < 32)) { bin = 1; break; } if (!bin) { pv_build_text(w); g_pc_panel.zoom = 100; g_pc_panel.fit_pending = 0; g_pv_cls = 0; } free(w); } } } return; }
     switch (cls) {
     case 0: { WCHAR *w = load_text_file(it->path); if (w) { pv_build_text(w); free(w); g_pc_panel.fit_pending = 0; } else pv_set_err(L"Empty or unreadable file"); break; }
@@ -3284,7 +3607,9 @@ static void preview_update(void) {
     case 4: pv_load_office(it->path, 1); break; case 5: pv_load_office(it->path, 2); break; case 6: pv_load_office(it->path, 3); break;
     case 7: pv_load_archive(it->path); break;
     }
+    if (g_pv.kind == PK_ERROR && g_force_big && C.confirm_ops) fm_msgbox(g_pv.err, L"Preview could not be loaded", MB_OK | MB_ICONWARNING);
     int *pz[8] = { &C.pvsz0, &C.pvsz1, &C.pvsz2, &C.pvsz3, &C.pvsz4, &C.pvsz5, &C.pvsz6, &C.pvsz7 };
+    if (g_pv.kind == PK_ERROR) return;
     if (*pz[cls] == 3 || (cls == 2 && C.video_mode == 1)) PostMessageW(S.hwnd, WM_COMMAND, MAKEWPARAM(CMD_PVFULL, 0), 0);
 }
 /* ---- text selection / copy ---- */
@@ -3344,7 +3669,7 @@ static int font_menu(int sx, int sy) {
 /* ---- fullscreen window ---- */
 static HWND g_fullwnd;
 static void pv_open_full(void);
-static void pv_close_full(void) { if (g_fullwnd) { HWND w = g_fullwnd; g_fullwnd = NULL; g_pc_full.hw = NULL; vid_close(); DestroyWindow(w); SetForegroundWindow(S.hwnd); preview_update(); redraw(); } }
+static void pv_close_full(void) { if (g_fullwnd) { HWND w = g_fullwnd; g_fullwnd = NULL; g_pc_full.hw = NULL; vid_close(); DestroyWindow(w); if (g_viewer) { DestroyWindow(S.hwnd); return; } SetForegroundWindow(S.hwnd); preview_update(); redraw(); } }
 static void pv_size_menu(int sx, int sy) {
     if (g_pv_cls < 0) { toast(L"Select a previewable file"); return; } int *pz[8] = { &C.pvsz0, &C.pvsz1, &C.pvsz2, &C.pvsz3, &C.pvsz4, &C.pvsz5, &C.pvsz6, &C.pvsz7 }; static const WCHAR *cn[8] = { L"text", L"image", L"video/audio", L"PDF", L"Word", L"Excel", L"PowerPoint", L"archive" };
     PMenu *m = pm_new(); WCHAR h[80]; wfmt(h, 80, L"Preview size for %ls files", cn[g_pv_cls]); pm_head(m, h); static const WCHAR *nm[4] = { L"Min (narrow panel)", L"Mid", L"Large", L"Full screen" };
@@ -3355,11 +3680,11 @@ static void pv_do_btn(PVC *c, int id, int sx, int sy) {
     PV *v = &g_pv; switch (id) {
     case PB_PREV: pv_goto(c, v->cur - 1); break; case PB_NEXT: pv_goto(c, v->cur + 1); break;
     case PB_ZOUT: pv_set_zoom(c, c->zoom * 4 / 5, (c->view.left + c->view.right) / 2, (c->view.top + c->view.bottom) / 2); break; case PB_ZIN: pv_set_zoom(c, c->zoom * 5 / 4 + 1, (c->view.left + c->view.right) / 2, (c->view.top + c->view.bottom) / 2); break;
-    case PB_FIT: pv_fit(c); break; case PB_ROTL: c->rot = (c->rot + 3) & 3; pv_fit(c); break; case PB_ROTR: c->rot = (c->rot + 1) & 3; pv_fit(c); break;
+    case PB_FIT: pv_fit(c); break; case PB_FITPAGE: pv_fit_ex(c, 1); break; case PB_LOADBIG: PostMessageW(S.hwnd, WM_COMMAND, MAKEWPARAM(CMD_LOADBIG, 0), 0); break; case PB_ROTL: c->rot = (c->rot + 3) & 3; pv_fit(c); break; case PB_ROTR: c->rot = (c->rot + 1) & 3; pv_fit(c); break;
     case PB_FONT: font_menu(sx, sy); break; case PB_COPY: pv_copy(0); break; case PB_ALL: { PPage *p = pv_page(); if (p && p->n) { v->havesel = 1; v->a_run = 0; v->a_ch = 0; v->b_run = p->n - 1; v->b_ch = p->r[p->n - 1].len; } break; }
     case PB_FULL: pv_open_full(); break; case PB_SIZE: pv_size_menu(sx, sy); break;
     case PB_EXTRACT: PostMessageW(S.hwnd, WM_COMMAND, MAKEWPARAM(CMD_EXTRACT_MENU, 0), 0); break;
-    case PB_OPENEXT: { Item tmp; memset(&tmp, 0, sizeof tmp); scpy(tmp.path, MAX_PATH, v->path); open_item(&tmp); break; }
+    case PB_OPENEXT: { if (ext_in(v->path, PV_VIDEO)) { vid_close(); play_external(v->path); break; } Item tmp; memset(&tmp, 0, sizeof tmp); scpy(tmp.path, MAX_PATH, v->path); open_item(&tmp); break; }
     case PB_PLAY: vid_toggle(); break; case PB_STOP: vid_stop(); break; case PB_BACK10: vid_poll(); vid_seek((int)g_vid.pos - 10000); break; case PB_FWD10: vid_poll(); vid_seek((int)g_vid.pos + 10000); break;
     }
     pv_clamp(c); pv_ctx_redraw(c);
@@ -3408,6 +3733,7 @@ static LRESULT CALLBACK full_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     PVC *c = &g_pc_full;
     switch (msg) {
     case WM_ERASEBKGND: return 1;
+    case WM_SIZE: if (wp != SIZE_MINIMIZED) InvalidateRect(h, NULL, FALSE); return 0;
     case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT rc; GetClientRect(h, &rc); HDC m = CreateCompatibleDC(dc); HBITMAP b = CreateCompatibleBitmap(dc, rc.right, rc.bottom); HGDIOBJ ob = SelectObject(m, b);
         RECT all = rc; fillr(m, &all, S.pal.bg); pv_layout(c, rc, 1); WCHAR meta[200], sz[32], dt[40]; fmt_bytes(S.prev.size, sz, 32); fmt_date(&S.prev.mt, dt, 40); wfmt(meta, 200, L"%ls - %ls - %ls   (Esc or X to close)", S.prev.type, sz, dt);
         pv_paint(m, c, base_name(S.prev.path), meta); if (g_vid.open && g_vid.video) { RECT vr = c->view; vid_place(&vr); }
@@ -3425,9 +3751,11 @@ static LRESULT CALLBACK full_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 static void pv_open_full(void) {
     if (g_fullwnd || g_pv.kind < PK_TEXT || g_pv.kind == PK_ERROR || g_pv.kind == PK_LOADING) return;
-    static int reg; if (!reg) { reg = 1; WNDCLASSEXW wc; memset(&wc, 0, sizeof wc); wc.cbSize = sizeof wc; wc.lpfnWndProc = full_proc; wc.hInstance = GetModuleHandleW(NULL); wc.hCursor = LoadCursorW(NULL, IDC_ARROW); wc.lpszClassName = L"WinShellFM.Full"; RegisterClassExW(&wc); }
+    static int reg; if (!reg) { reg = 1; WNDCLASSEXW wc; memset(&wc, 0, sizeof wc); wc.cbSize = sizeof wc; wc.lpfnWndProc = full_proc; wc.hInstance = GetModuleHandleW(NULL); wc.hCursor = LoadCursorW(NULL, IDC_ARROW); wc.hIcon = LoadIconW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(1)); wc.lpszClassName = L"WinShellFM.Full"; RegisterClassExW(&wc); }
     MONITORINFO mi; memset(&mi, 0, sizeof mi); mi.cbSize = sizeof mi; GetMonitorInfoW(MonitorFromWindow(S.hwnd, MONITOR_DEFAULTTONEAREST), &mi); RECT r = mi.rcMonitor; int media = g_pv.kind == PK_MEDIA; vid_close();
-    g_fullwnd = CreateWindowExW(WS_EX_TOPMOST, L"WinShellFM.Full", L"Preview", WS_POPUP | WS_CLIPCHILDREN, r.left, r.top, r.right - r.left, r.bottom - r.top, S.hwnd, NULL, GetModuleHandleW(NULL), NULL); if (!g_fullwnd) return;
+    WCHAR ttl[320]; scpy(ttl, 320, L"Preview");
+    if (g_viewer) { RECT wa = mi.rcWork; int ww = (wa.right - wa.left) * 85 / 100, hh = (wa.bottom - wa.top) * 88 / 100; r.left = wa.left + ((wa.right - wa.left) - ww) / 2; r.top = wa.top + ((wa.bottom - wa.top) - hh) / 2; r.right = r.left + ww; r.bottom = r.top + hh; wfmt(ttl, 320, L"%ls - Files Viewer", base_name(S.prev.path)); }
+    g_fullwnd = CreateWindowExW(g_viewer ? 0 : WS_EX_TOPMOST, L"WinShellFM.Full", ttl, g_viewer ? (WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN) : (WS_POPUP | WS_CLIPCHILDREN), r.left, r.top, r.right - r.left, r.bottom - r.top, g_viewer ? NULL : S.hwnd, NULL, GetModuleHandleW(NULL), NULL); if (!g_fullwnd) return;
     g_pc_full.hw = g_fullwnd; g_pc_full.zoom = 100; g_pc_full.rot = 0; g_pc_full.sx = g_pc_full.sy = 0; g_pc_full.fit_pending = 1; g_pc_full.full = 1;
     if (media) { RECT a = { 0, 0, 16, 16 }; vid_open(S.prev.path, g_fullwnd, &a, !pv_is_audio(S.prev.path)); }
     ShowWindow(g_fullwnd, SW_SHOW); SetForegroundWindow(g_fullwnd); SetFocus(g_fullwnd); InvalidateRect(g_fullwnd, NULL, FALSE);
@@ -3444,7 +3772,22 @@ static Lay LY;
 static int g_nav_dirty = 1, g_maxed;
 static RECT g_tabr[FM_MAXTABS], g_tabplus, g_rb[24]; static int g_rb_id[24], g_nrb;
 static const WCHAR *RIB_TABS[6] = { L"File", L"Home", L"Share", L"View", L"Style & Look", L"Tools" };
-static int view_mode(void) { Tab *t = curtab(); if (!t->path[0]) return 0; return !wcscmp(C.view, L"icons") ? 1 : !wcscmp(C.view, L"tiles") ? 2 : 0; }
+static void draw_thispc(HDC dc);
+static COLORREF lay_col(const WCHAR *id, COLORREF def);
+static void lay_draw_launchers(HDC dc);
+static void lay_overlay(HDC dc, int W, int H);
+static void lay_paint_widgets(HDC dc);
+static void paint_drive(HDC dc, int x, int y, int s, COLORREF col);
+static int draw_custom_icon2(HDC dc, const Item *it, int x, int y, int s);
+static void paint_ext_icon(HDC dc, const WCHAR *path, int x, int y, int s, int u);
+static void cicons_flush(void);
+static void lay_apply(Lay *L, int W, int H);
+static int lay_dh(const WCHAR *id);
+static int lay_dw(const WCHAR *id);
+static int pc_geom(int *cw, int *ch, int *per);
+static RECT pc_rect(int vi);
+static int pc_total_h(void);
+static int view_mode(void) { Tab *t = curtab(); if (!t->path[0]) return C.pc_tiles ? 3 : 0; return !wcscmp(C.view, L"icons") ? 1 : !wcscmp(C.view, L"tiles") ? 2 : 0; }
 static int tw_(const WCHAR *s, HFONT f) { HDC dc = pv_mdc(); HGDIOBJ o = SelectObject(dc, f ? f : S.font); SIZE z; GetTextExtentPoint32W(dc, s, lstrlenW(s), &z); SelectObject(dc, o); return z.cx; }
 static int cap_kind(const Style *st) {
     const WCHAR *k = st->key; if (!wcscmp(k, L"macos")) return 1; if (!wcscmp(k, L"ubuntu") || !wcscmp(k, L"zorin") || !wcscmp(k, L"mint") || !wcscmp(k, L"chromeos") || !wcscmp(k, L"neon")) return 2;
@@ -3452,6 +3795,7 @@ static int cap_kind(const Style *st) {
 }
 static int eff_pv_width(void) { return g_pv_override ? C.preview_width : (g_pv_cls >= 0 ? pv_width_for(g_pv_cls) : C.preview_width); }
 static int rb_count(int tab, int *ids, const WCHAR **lab);
+static int lay_arr(const Style *st) { const WCHAR *k = st->key; if (!wcscmp(k, L"macos") || !wcscmp(k, L"chromeos") || !wcscmp(k, L"ubuntu")) return 3; if (!wcscmp(k, L"zorin") || !wcscmp(k, L"mint") || !wcscmp(k, L"xfce")) return 1; if (!wcscmp(k, L"total") || !wcscmp(k, L"mc") || !wcscmp(k, L"opus") || !wcscmp(k, L"haiku") || !wcscmp(k, L"neon")) return 2; return 0; }
 static void do_layout(int W, int H) {
     const Style *st = cur_style(); Lay *L = &LY; memset(L, 0, sizeof *L); int y = 0; L->capkind = cap_kind(st);
     int ch = px(L->capkind == 2 ? 38 : L->capkind == 1 ? 30 : 32); L->caption = (RECT){ 0, 0, W, ch }; y = ch;
@@ -3462,22 +3806,27 @@ static void do_layout(int W, int H) {
     int rh = px(28); L->ribtabs = (RECT){ 0, y, W, y + rh }; int x = px(8);
     for (int i = 0; i < 6; i++) { int w = tw_(RIB_TABS[i], S.font) + px(22); L->ribtab[i] = (RECT){ x, y + 2, x + w, y + rh }; x += w + px(2); }
     L->ribcol = (RECT){ W - px(30), y + 2, W - px(4), y + rh - 2}; y += rh;
-    if (C.ribbon_open) { L->has_strip = 1; L->strip = (RECT){ 0, y, W, y + px(68) }; y += px(68); }
-    int th = st->layout == LAY_HEADER ? px(st->cap_h_fm) : px(st->tool_h); if (th < px(38)) th = px(38); L->navbar = (RECT){ 0, y, W, y + th }; y += th;
+    if (C.ribbon_open) { L->has_strip = 1; int sth = px(68) + lay_dh(L"strip"); if (sth < px(30)) sth = px(30); L->strip = (RECT){ 0, y, W, y + sth }; y += sth; }
+    int th = st->layout == LAY_HEADER ? px(st->cap_h_fm) : px(st->tool_h); if (th < px(38)) th = px(38); th += lay_dh(L"navbar"); if (th < px(30)) th = px(30); L->navbar = (RECT){ 0, y, W, y + th }; y += th;
     if (S.ntabs > 1) { L->tabs = (RECT){ 0, y, W, y + px(28) }; y += px(28); }
-    int sh = px(st->status_h); if (sh < px(24)) sh = px(24); int bottom = H - sh; if (bottom < y) bottom = y; L->status = (RECT){ 0, bottom, W, H };
-    int navw = px(st->nav_w); if (navw > W / 3) navw = W / 3; int pw = 0;
+    int sh = px(st->status_h) + lay_dh(L"status"); if (sh < px(20)) sh = px(20); int bottom = H - sh; if (bottom < y) bottom = y; L->status = (RECT){ 0, bottom, W, H };
+    int navw = px(st->nav_w) + lay_dw(L"nav"); if (navw > W / 3) navw = W / 3; if (navw < px(90)) navw = px(90); int pw = 0;
     if (C.show_preview) { pw = px(eff_pv_width()); if (pw > W - navw - px(280)) pw = W - navw - px(280); if (pw < px(140)) pw = 0; }
-    L->nav = (RECT){ 0, y, navw, bottom }; L->content = (RECT){ navw, y, W - pw, bottom }; L->preview = (RECT){ W - pw, y, W, bottom }; if (pw) L->split = (RECT){ W - pw - px(3), y, W - pw + px(3), bottom };
-    int bh = px(st->tb_btn), fh = px(st->field_h), gap = px(st->tb_gap), cy = (L->navbar.top + L->navbar.bottom) / 2; x = px(8); RECT *b[4] = { &L->back, &L->fwd, &L->up, &L->refresh };
-    for (int i = 0; i < 4; i++) { *b[i] = (RECT){ x, cy - bh / 2, x + bh, cy - bh / 2 + bh }; x += bh + gap; }
-    int right = W - px(8); RECT *rb[4] = { &L->menu, &L->setb, &L->cmdb, &L->osb };
-    for (int i = 0; i < 4; i++) { *rb[i] = (RECT){ right - bh, cy - bh / 2, right, cy - bh / 2 + bh }; right -= bh + gap; }
-    right -= gap; int sw = px(st->search_w) + px(60); if (sw > (right - x) * 6 / 10) sw = (right - x) * 6 / 10; L->search = (RECT){ right - sw, cy - fh / 2, right, cy - fh / 2 + fh };
-    L->sdrop = (RECT){ L->search.right - fh * 7 / 10 - px(2), L->search.top, L->search.right - px(2), L->search.bottom }; int subw = tw_(L"Sub", S.font_small) + px(26); L->sub = (RECT){ L->sdrop.left - subw, L->search.top, L->sdrop.left, L->search.bottom };
-    right = L->search.left - gap * 2 - px(4); L->addr = (RECT){ x + px(4), cy - fh / 2, right, cy - fh / 2 + fh };
+    if (C.nav_right) { int cr = W - navw; L->nav = (RECT){ cr, y, W, bottom }; L->content = (RECT){ 0, y, cr - pw, bottom }; L->preview = (RECT){ cr - pw, y, cr, bottom }; if (pw) L->split = (RECT){ cr - pw - px(3), y, cr - pw + px(3), bottom }; }
+    else { L->nav = (RECT){ 0, y, navw, bottom }; L->content = (RECT){ navw, y, W - pw, bottom }; L->preview = (RECT){ W - pw, y, W, bottom }; if (pw) L->split = (RECT){ W - pw - px(3), y, W - pw + px(3), bottom }; }
+    int bh = px(st->tb_btn), fh = px(st->field_h), gap = px(st->tb_gap), cy = (L->navbar.top + L->navbar.bottom) / 2;
+    { static const char *ARR[4] = { "BAST", "TBAS", "BSAT", "BATS" }; const char *ord = ARR[lay_arr(st)]; int gb = 4 * bh + 3 * gap, sw = px(st->search_w) + px(60), fixed = 0, ng = 0;
+      for (const char *c = ord; *c; c++) { fixed += *c == 'S' ? sw : (*c == 'A' ? 0 : gb); ng++; } int flex = W - px(16) - fixed - (ng - 1) * gap * 2; if (flex < px(140)) { sw -= px(140) - flex; if (sw < px(120)) sw = px(120); flex = px(140); }
+      int x = px(8); RECT *bg[4] = { &L->back, &L->fwd, &L->up, &L->refresh }, *tg[4] = { &L->osb, &L->cmdb, &L->setb, &L->menu };
+      for (const char *c = ord; *c; c++) {
+          if (*c == 'B' || *c == 'T') { RECT **g = *c == 'B' ? (RECT **)bg : (RECT **)tg; for (int i = 0; i < 4; i++) { *g[i] = (RECT){ x, cy - bh / 2, x + bh, cy - bh / 2 + bh }; x += bh + gap; } x -= gap; }
+          else if (*c == 'A') { L->addr = (RECT){ x, cy - fh / 2, x + flex, cy - fh / 2 + fh }; x += flex; }
+          else { L->search = (RECT){ x, cy - fh / 2, x + sw, cy - fh / 2 + fh }; x += sw; }
+          x += gap * 2; }
+      L->sdrop = (RECT){ L->search.right - fh * 7 / 10 - px(2), L->search.top, L->search.right - px(2), L->search.bottom }; int subw = tw_(L"Sub", S.font_small) + px(26); L->sub = (RECT){ L->sdrop.left - subw, L->search.top, L->sdrop.left, L->search.bottom }; }
     int det = view_mode() == 0, sbw = px(st->sb_w); if (sbw < px(10)) sbw = px(10); int hh = det ? px(st->hdr_h) : 0;
     L->hdr = (RECT){ L->content.left, L->content.top, L->content.right, L->content.top + hh }; L->body = (RECT){ L->content.left, L->content.top + hh, L->content.right - sbw, bottom }; L->sb = (RECT){ L->content.right - sbw, L->body.top, L->content.right, bottom };
+    lay_apply(L, W, H);
     int vb = sh - px(4); if (vb < px(18)) vb = px(18); for (int i = 0; i < 3; i++) L->views[i] = (RECT){ W - px(10) - vb * (3 - i), bottom + (sh - vb) / 2, W - px(10) - vb * (2 - i), bottom + (sh - vb) / 2 + vb };
 }
 static int gutter(void) { return (view_mode() == 0 && C.checkboxes) ? px(26) : 0; }
@@ -3486,18 +3835,19 @@ static void col_x(int bw, int c[5]) {
     c[0] = 0; c[1] = name; c[2] = name + date; c[3] = name + date + typ; c[4] = name + date + typ + size;
 }
 static int cell_geom(int *cw, int *chh, int *per) {
-    int bw = LY.body.right - LY.body.left; int m = view_mode(); if (m == 1) { *cw = px(C.icon_size * 1.5 + 30); *chh = px(C.icon_size + 52); } else { *cw = px(230); *chh = px(58); }
-    *per = (bw - px(8)) / *cw; if (*per < 1) *per = 1; return m;
+    int bw = LY.body.right - LY.body.left; int m = view_mode(); if (m == 3) return pc_geom(cw, chh, per); if (m == 1) { *cw = px(C.icon_size * 1.5 + 30); *chh = px(C.icon_size + 52); } else { *cw = px(230); *chh = px(58); }
+    *per = (bw - px(8) - px(C.drag_margin)) / *cw; if (*per < 1) *per = 1; return m;
 }
-static int total_h(void) { Tab *t = curtab(); int m = view_mode(); if (m == 0) return t->nv * px(cur_style()->row_h) + px(4); int cw, ch, per; cell_geom(&cw, &ch, &per); return ((t->nv + per - 1) / per) * ch + px(8); }
+static int total_h(void) { Tab *t = curtab(); int m = view_mode(); if (m == 3) return pc_total_h(); if (m == 0) return t->nv * px(cur_style()->row_h) + px(4) + px(C.drag_margin); int cw, ch, per; cell_geom(&cw, &ch, &per); return ((t->nv + per - 1) / per) * ch + px(8) + px(C.drag_margin); }
 static void clamp_scroll(void) { Tab *t = curtab(); int vh = LY.body.bottom - LY.body.top, mx = total_h() - vh; if (mx < 0) mx = 0; if (t->scroll > mx) t->scroll = mx; if (t->scroll < 0) t->scroll = 0; }
 static RECT item_rect(int i) {
-    Tab *t = curtab(); int m = view_mode(); RECT r; int sc = t->scroll;
+    Tab *t = curtab(); int m = view_mode(); RECT r; int sc = t->scroll; if (m == 3) { r = pc_rect(i); OffsetRect(&r, 0, -sc); return r; }
     if (m == 0) { int rh = px(cur_style()->row_h); r = (RECT){ LY.body.left, LY.body.top + i * rh - sc, LY.body.right, LY.body.top + (i + 1) * rh - sc }; return r; }
     int cw, ch, per; cell_geom(&cw, &ch, &per); int col = i % per, row = i / per; r.left = LY.body.left + px(4) + col * cw; r.top = LY.body.top + px(4) + row * ch - sc; r.right = r.left + cw - px(4); r.bottom = r.top + ch - px(4); return r;
 }
 static int hit_item(int x, int y) {
     Tab *t = curtab(); if (!in_rect(&LY.body, x, y)) return -1; int m = view_mode(), vi;
+    if (m == 3) { for (int i = 0; i < t->nv; i++) { RECT r = item_rect(i); if (in_rect(&r, x, y)) return i; } return -1; }
     if (m == 0) vi = (y - LY.body.top + t->scroll) / px(cur_style()->row_h);
     else { int cw, ch, per; cell_geom(&cw, &ch, &per); int col = (x - LY.body.left - px(4)) / cw, row = (y - LY.body.top - px(4) + t->scroll) / ch; if (col >= per || col < 0 || row < 0) return -1; vi = row * per + col; }
     if (vi < 0 || vi >= t->nv) return -1; if (m != 0) { RECT r = item_rect(vi); if (!in_rect(&r, x, y)) return -1; } return vi;
@@ -3517,28 +3867,48 @@ static void nav_add(const WCHAR *label, const WCHAR *path, int root, int glyph, 
     NavEnt *e = &S.nav[S.nnav++]; scpy(e->label, MAX_PATH, label); scpy(e->path, MAX_PATH, path); e->root = root; e->glyph = glyph; e->sect = sect; e->depth = depth; e->exp = exp;
 }
 static int cmp_wstr(const void *a, const void *b) { return lstrcmpiW(*(WCHAR *const *)a, *(WCHAR *const *)b); }
+static int g_nav_reveal;
+static int has_subdirs(const WCHAR *dir) {
+    WCHAR pat[MAX_PATH + 4]; path_join(pat, MAX_PATH, dir, L"*"); WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd); if (h == INVALID_HANDLE_VALUE) return 0; int r = 0, n = 0;
+    do { if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && wcscmp(fd.cFileName, L".") && wcscmp(fd.cFileName, L"..") && (C.show_hidden || !hidden_name(fd.cFileName, fd.dwFileAttributes))) { r = 1; break; } } while (++n < 600 && FindNextFileW(h, &fd));
+    FindClose(h); return r;
+}
+static void nav_tree(const WCHAR *dir, int depth, int sect);
+static void nav_folder(const WCHAR *label, const WCHAR *path, int sect, int depth) {
+    int open = 0, exp = -1; if (C.show_tree) { open = sl_find(&g_tree_open, path) >= 0; exp = has_subdirs(path) ? (open ? 1 : 0) : -1; if (exp < 0) open = 0; }
+    nav_add(label, path, 0, 0, sect, depth, exp); if (open) nav_tree(path, depth + 1, sect);
+}
 static void nav_tree(const WCHAR *dir, int depth, int sect) {
-    if (depth > 6) return; WCHAR pat[MAX_PATH + 4]; path_join(pat, MAX_PATH, dir, L"*"); WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd); if (h == INVALID_HANDLE_VALUE) return;
+    if (depth > 8) return; WCHAR pat[MAX_PATH + 4]; path_join(pat, MAX_PATH, dir, L"*"); WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(pat, &fd); if (h == INVALID_HANDLE_VALUE) return;
     WCHAR **names = NULL; int n = 0, cap = 0; do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue; if (!C.show_hidden && hidden_name(fd.cFileName, fd.dwFileAttributes)) continue;
-        if (n == cap) { cap = cap ? cap * 2 : 32; names = (WCHAR **)realloc(names, cap * sizeof(WCHAR *)); } names[n++] = wdup(fd.cFileName); } while (FindNextFileW(h, &fd) && n < 300); FindClose(h);
-    qsort(names, n, sizeof(WCHAR *), cmp_wstr);
-    for (int i = 0; i < n; i++) { WCHAR p[MAX_PATH]; path_join(p, MAX_PATH, dir, names[i]); int open = sl_find(&g_tree_open, p) >= 0; nav_add(names[i], p, 0, 0, sect, depth, open ? 1 : 0); if (open) nav_tree(p, depth + 1, sect); free(names[i]); } free(names);
+        if (n == cap) { cap = cap ? cap * 2 : 32; names = (WCHAR **)realloc(names, cap * sizeof(WCHAR *)); } names[n++] = wdup(fd.cFileName); } while (FindNextFileW(h, &fd) && n < 400); FindClose(h);
+    if (n) qsort(names, n, sizeof(WCHAR *), cmp_wstr);
+    for (int i = 0; i < n; i++) { WCHAR p[MAX_PATH]; path_join(p, MAX_PATH, dir, names[i]); nav_folder(names[i], p, sect, depth); free(names[i]); } free(names);
 }
 static void nav_rebuild(void) {
     const Style *st = cur_style(); WCHAR h[MAX_PATH], p[MAX_PATH]; home_dir(h); S.nnav = 0; g_nav_dirty = 0;
     nav_add(st->sec[0], L"::quick", 1, 1, 0, 0, -1);
-    if (!S.nav_open[0]) { static const WCHAR *n[] = { L"Desktop", L"Downloads", L"Documents", L"Pictures", L"Music", L"Videos" }; for (int k = 0; k < 6; k++) { path_join(p, MAX_PATH, h, n[k]); if (dir_exists(p)) nav_add(n[k], p, 0, 0, 0, 0, -1); } }
+    if (!S.nav_open[0]) { static const WCHAR *n[] = { L"Desktop", L"Downloads", L"Documents", L"Pictures", L"Music", L"Videos" }; for (int k = 0; k < 6; k++) { path_join(p, MAX_PATH, h, n[k]); if (dir_exists(p)) nav_folder(n[k], p, 0, 0); } }
     nav_add(st->sec[1], L"::recent", 1, 2, 1, 0, -1);
     if (!S.nav_open[1]) for (int k = 0; k < C.recent_folders.n && k < 8; k++) if (dir_exists(C.recent_folders.v[k])) { const WCHAR *b = base_name(C.recent_folders.v[k]); nav_add(*b ? b : C.recent_folders.v[k], C.recent_folders.v[k], 0, 0, 1, 0, -1); }
     nav_add(st->sec[2], L"::fav", 1, 3, 2, 0, -1);
-    if (!S.nav_open[2]) for (int k = 0; k < C.favorites.n; k++) if (dir_exists(C.favorites.v[k])) { const WCHAR *b = base_name(C.favorites.v[k]); nav_add(*b ? b : C.favorites.v[k], C.favorites.v[k], 0, 0, 2, 0, -1); }
+    if (!S.nav_open[2]) for (int k = 0; k < C.favorites.n; k++) if (dir_exists(C.favorites.v[k])) { const WCHAR *b = base_name(C.favorites.v[k]); nav_folder(*b ? b : C.favorites.v[k], C.favorites.v[k], 2, 0); }
     nav_add(st->sec[3], L"", 1, 4, 3, 0, -1);
     if (!S.nav_open[3]) { DWORD mask = GetLogicalDrives();
-        for (int k = 0; k < 26; k++) if (mask & (1u << k)) { WCHAR root[4] = { (WCHAR)('A' + k), ':', '\\', 0 }, lab[40]; UINT ty = GetDriveTypeW(root); wfmt(lab, 40, L"%lc: (%ls)", root[0], ty == DRIVE_CDROM ? L"CD" : ty == DRIVE_REMOVABLE ? L"Removable" : L"Local Disk");
+        for (int k = 0; k < 26; k++) if (mask & (1u << k)) { WCHAR root[4] = { (WCHAR)('A' + k), ':', '\\', 0 }, lab[40]; UINT ty = GetDriveTypeW(root); wfmt(lab, 40, L"%lc: (%ls)", root[0], ty == DRIVE_CDROM ? L"CD" : ty == DRIVE_REMOVABLE ? L"Removable" : ty == DRIVE_REMOTE ? L"Network" : L"Local Disk");
             int open = C.show_tree && sl_find(&g_tree_open, root) >= 0; nav_add(lab, root, 0, 5, 3, 0, C.show_tree ? (open ? 1 : 0) : -1); if (open) nav_tree(root, 1, 3); } }
+    nav_add(C.apps_title[0] ? C.apps_title : L"Computer", L"::apps", 1, 7, 4, 0, -1); nav_add(L"Games", L"::games", 1, 8, 6, 0, -1); nav_add(L"Recycle Bin", L"::trash", 1, 6, 5, 0, -1);
     S.nav_t = GetTickCount();
+    if (g_nav_reveal) { g_nav_reveal = 0; Tab *t = curtab(); int best = -1; for (int i = 0; i < S.nnav; i++) if (!S.nav[i].root && wieq(S.nav[i].path, t->path)) { if (best < 0 || S.nav[i].sect == 3) best = i; }
+        if (best >= 0) { int rh = px(st->nav_row), vh = LY.nav.bottom - LY.nav.top; int y0 = best * rh; if (vh > rh) { if (y0 < S.nav_scroll) S.nav_scroll = y0; else if (y0 + rh + px(8) > S.nav_scroll + vh) S.nav_scroll = y0 + rh + px(8) - vh; if (S.nav_scroll < 0) S.nav_scroll = 0; } } }
 }
-static int nav_hit(int x, int y) { if (y < LY.nav.top || x >= LY.nav.right) return -1; int rh = px(cur_style()->nav_row); int i = (y - LY.nav.top - px(4) + S.nav_scroll) / rh; return (i >= 0 && i < S.nnav) ? i : -1; }
+static void tree_reveal(const WCHAR *path) {
+    if (!path[0] || is_special(path)) return; WCHAR p[MAX_PATH]; parent_of(path, p); int ch = 0;
+    while (p[0]) { if (sl_find(&g_tree_open, p) < 0) { sl_add(&g_tree_open, p); ch = 1; } WCHAR q[MAX_PATH]; parent_of(p, q); scpy(p, MAX_PATH, q); }
+    if (C.show_tree) { g_nav_reveal = 1; g_nav_dirty = 1; } (void)ch;
+}
+static int nav_hit(int x, int y) { if (!in_rect(&LY.nav, x, y)) return -1; int rh = px(cur_style()->nav_row); int i = (y - LY.nav.top - px(4) + S.nav_scroll) / rh; return (i >= 0 && i < S.nnav) ? i : -1; }
+static int nav_arrow_hit(const NavEnt *e, int x) { int ix = LY.nav.left + px(4) + px(24) + e->depth * px(14); return abs(x - (ix - px(12))) <= px(9); }
 static void nav_toggle(int i) {
     NavEnt *e = &S.nav[i]; int k = sl_find(&g_tree_open, e->path); if (k >= 0) sl_del(&g_tree_open, k); else sl_add(&g_tree_open, e->path); nav_rebuild(); redraw();
 }
@@ -3552,7 +3922,7 @@ static void apply_fonts(void) {
     pv_font_reset();
 }
 /* ---- icons: custom + folder colours ---- */
-typedef struct { WCHAR key[MAX_PATH]; HICON ic; HBITMAP bm; int w, h, tried; } CIcon;
+typedef struct { WCHAR key[MAX_PATH]; HICON ic; HBITMAP bm; int w, h, tried; void *gp; } CIcon;
 static CIcon g_cicons[48]; static int g_cic_next;
 static const WCHAR *icon_map_find(const WCHAR *key) { int l = lstrlenW(key); for (int i = 0; i < C.icon_map.n; i++) { const WCHAR *s = C.icon_map.v[i]; const WCHAR *bar = wcsrchr(s, '|'); if (!bar) continue; if ((int)(bar - s) == l && !_wcsnicmp(s, key, l)) return bar + 1; } return NULL; }
 static CIcon *cicon_load(const WCHAR *file) {
@@ -3570,18 +3940,25 @@ static u32 folder_col(const WCHAR *path, u32 def) { int l = lstrlenW(path); for 
 static int is_gfx_thumb(const WCHAR *p) { return ext_in(p, L".ico.bmp.gif.tif.tiff.webp."); }
 static void draw_item_icon(HDC dc, const Item *it, int x, int y, int s, int thumbs, int *budget, int badge) {
     const Style *st = cur_style(); if (it->kind == 1) { paint_glyph(dc, 5, x, y, s, S.pal.text); return; }
-    if (draw_custom_icon(dc, it, x, y, s)) return;
+    if (draw_custom_icon2(dc, it, x, y, s)) return;
     if (it->dir) { paint_folder(dc, x, y, s, folder_col(it->path, st->folder)); return; }
-    if (thumbs && C.thumbnails && is_image(it->path) && ((is_gfx_thumb(it->path) && C.thumb_gfx) || (!is_gfx_thumb(it->path) && C.thumb_img))) {
+    if (thumbs && !g_safe && C.thumbnails && is_image(it->path) && ((is_gfx_thumb(it->path) && C.thumb_gfx) || (!is_gfx_thumb(it->path) && C.thumb_img))) {
         HBITMAP b = thumb_get(dc, it->path, s, budget); if (b) { HDC m = CreateCompatibleDC(dc); HGDIOBJ o = SelectObject(m, b); BitBlt(dc, x, y, s, s, m, 0, 0, SRCCOPY); SelectObject(m, o); DeleteDC(m);
             if (badge) { HICON ic = icon_for(it->path, 0, 0); int bs = px(16); RECT bg = { x - 1, y + s - bs - 2, x + bs + 3, y + s + 1 }; rrect(dc, &bg, S.pal.bg, S.pal.border, 3, 1); if (ic) DrawIconEx(dc, x + 1, y + s - bs, ic, bs, bs, 0, NULL, DI_NORMAL); } return; } }
-    HICON ic = icon_for(it->path, s > 20, 0); if (ic) DrawIconEx(dc, x, y, ic, s, s, 0, NULL, DI_NORMAL);
+    if (C.ext_icons && !ext_in(it->path, L".exe.ico.lnk.scr.cur.ani.")) paint_ext_icon(dc, it->path, x, y, s, 0); else { HICON ic = icon_for(it->path, s > 20, 0); if (ic) DrawIconEx(dc, x, y, ic, s, s, 0, NULL, DI_NORMAL); }
     if (thumbs && C.thumb_vid && ext_in(it->path, PV_VIDEO) && !pv_is_audio(it->path)) { int d = s / 3 + 2; POINT t[3] = { { x + s - d - 1, y + s - d - 1 }, { x + s - d - 1, y + s - 1 }, { x + s - 1, y + s - d / 2 - 1 } }; poly(dc, t, 3, S.pal.accent); }
 }
 static void pv_pick_icon(HDC dc, const RECT *body) {
-    Item tmp; memset(&tmp, 0, sizeof tmp); scpy(tmp.path, MAX_PATH, g_pv.path); scpy(tmp.name, 256, base_name(g_pv.path)); tmp.dir = S.prev.dir; int isz = px(64); int bud = 0;
-    if (!g_pv.path[0]) { SelectObject(dc, S.font); RECT r = *body; textr(dc, L"Select a file to preview", &r, TC, S.pal.dim); return; }
-    draw_item_icon(dc, &tmp, body->left + (body->right - body->left - isz) / 2, body->top + px(24), isz, 0, &bud, 0);
+    const Pal *p = &S.pal; if (!g_pv.path[0]) { SelectObject(dc, S.font); RECT r = *body; textr(dc, L"Select a file or folder to see its details", &r, TC, p->dim); return; }
+    Item tmp; memset(&tmp, 0, sizeof tmp); scpy(tmp.path, MAX_PATH, g_pv.path); scpy(tmp.name, 256, base_name(g_pv.path)); tmp.dir = S.prev.dir; int bud = 0; int bw = body->right - body->left; int isz = px(96); if (isz > bw - px(20)) isz = bw - px(20); if (isz < px(32)) isz = px(32);
+    int ix = body->left + (bw - isz) / 2, iy = body->top + px(18); WCHAR dr[4]; int drive = 0; if (g_pinfo.n && !wcscmp(g_pinfo.k[0], L"Name") && g_pv.path[1] == ':' && g_pv.path[2] == '\\' && !g_pv.path[3]) drive = 1; (void)dr;
+    HRGN rg = CreateRectRgn(body->left, body->top, body->right, body->bottom); SelectClipRgn(dc, rg); DeleteObject(rg);
+    if (drive) paint_drive(dc, ix, iy, isz, mixc(p->dim, p->text, 0.35)); else if (!tmp.dir && !ext_in(tmp.path, L".exe.ico.lnk.scr.") ) { if (!draw_custom_icon2(dc, &tmp, ix, iy, isz)) paint_ext_icon(dc, tmp.path, ix, iy, isz, 0); }
+    else if (!tmp.dir) { HICON ic = icon_for(tmp.path, 1, 0); if (ic) DrawIconEx(dc, ix, iy, ic, isz, isz, 0, NULL, DI_NORMAL); } else draw_item_icon(dc, &tmp, ix, iy, isz, 0, &bud, 0);
+    int y = iy + isz + px(14); SelectObject(dc, S.font_big); RECT nr = { body->left + px(10), y, body->right - px(10), y + px(44) }; textr(dc, tmp.name, &nr, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS, p->text); y += px(48); SelectObject(dc, S.font_small);
+    for (int i = 1; i < g_pinfo.n; i++) { RECT kr = { body->left + px(12), y, body->left + px(92), y + px(30) }, vr = { body->left + px(96), y, body->right - px(10), y + px(30) }; textr(dc, g_pinfo.k[i], &kr, DT_SINGLELINE | DT_END_ELLIPSIS, p->dim);
+        RECT mr = vr; DrawTextW(dc, g_pinfo.v[i], -1, &mr, DT_CALCRECT | DT_WORDBREAK); int hh = mr.bottom - mr.top; if (hh < px(16)) hh = px(16); vr.bottom = vr.top + hh; textr(dc, g_pinfo.v[i], &vr, DT_WORDBREAK | DT_END_ELLIPSIS, p->text); y += hh + px(8); if (y > body->bottom) break; }
+    SelectObject(dc, S.font); SelectClipRgn(dc, NULL);
 }
 /* ---- draw helpers ---- */
 static void tb_glyph(HDC dc, int kind, const RECT *r, COLORREF c) {
@@ -3608,7 +3985,7 @@ static void tb_btn(HDC dc, const RECT *r, int kind, int enabled, int hover) {
     tb_glyph(dc, kind, r, enabled ? p->text : mixc(p->text, p->tool, 0.65));
 }
 static const WCHAR *special_label(const WCHAR *p) {
-    const Style *st = cur_style(); if (!p[0]) return st->sec[3]; if (!wcscmp(p, L"::quick")) return st->sec[0]; if (!wcscmp(p, L"::recent")) return st->sec[1]; if (!wcscmp(p, L"::fav")) return st->sec[2]; return p;
+    const Style *st = cur_style(); if (!p[0]) return st->sec[3]; if (!wcscmp(p, L"::quick")) return st->sec[0]; if (!wcscmp(p, L"::recent")) return st->sec[1]; if (!wcscmp(p, L"::fav")) return st->sec[2]; if (!wcscmp(p, L"::apps")) return C.apps_title[0] ? C.apps_title : L"Computer"; if (!wcscmp(p, L"::trash")) return L"Recycle Bin"; if (!wcscmp(p, L"::games")) return L"Games"; return p;
 }
 static void draw_check(HDC dc, const RECT *r, int on, int hot, int round) {
     const Pal *p = &S.pal; if (on) { if (round) { ellipsec(dc, r, p->accent, p->accent, 1); } else rrect(dc, r, p->accent, p->accent, 3, 0); int cx = r->left, cy = r->top, w = r->right - r->left; COLORREF wc = contrast(p->accent);
@@ -3691,7 +4068,7 @@ static void rb_glyph(HDC dc, int id, const RECT *r, COLORREF c) {
     SelectObject(dc, S.font_big); RECT t = *r; textr(dc, l, &t, TC, c); SelectObject(dc, S.font);
 }
 static void draw_ribbon(HDC dc) {
-    const Pal *p = &S.pal; const Style *st = cur_style(); int pill = st->round >= 9; RECT rt = LY.ribtabs; fillr(dc, &rt, p->tool); SelectObject(dc, S.font);
+    const Pal *p = &S.pal; const Style *st = cur_style(); int pill = st->round >= 9; RECT rt = LY.ribtabs; fillr(dc, &rt, lay_col(L"ribtabs", p->tool)); SelectObject(dc, S.font);
     for (int i = 0; i < 6; i++) { RECT r = LY.ribtab[i]; int act = i == C.ribbon_tab && C.ribbon_open, hot = in_rect(&r, g_mx, g_my);
         if (pill) { if (act) rrect(dc, &r, p->sel, p->sel, st->round > 12 ? (r.bottom - r.top) / 2 : st->round, 0); else if (hot) rrect(dc, &r, p->hover, p->hover, st->round > 12 ? (r.bottom - r.top) / 2 : st->round, 0); textr(dc, RIB_TABS[i], &r, TC, act ? p->sel_text : p->text); }
         else { if (hot && !act) fillr(dc, &r, p->hover); if (act) { RECT t = r; fillr(dc, &t, p->tool); fill4(dc, r.left, r.bottom - 3, r.right, r.bottom, p->accent); } textr(dc, RIB_TABS[i], &r, TC, act ? p->text : p->dim); } }
@@ -3709,11 +4086,11 @@ static void draw_ribbon(HDC dc) {
     SelectObject(dc, S.font);
 }
 static void draw_toolbar(HDC dc) {
-    const Pal *p = &S.pal; const Style *st = cur_style(); Tab *t = curtab(); fillr(dc, &LY.navbar, st->layout == LAY_HEADER ? p->cap : p->tool); fill4(dc, 0, LY.navbar.bottom - 1, LY.navbar.right, LY.navbar.bottom, p->line); SelectObject(dc, S.font);
+    const Pal *p = &S.pal; const Style *st = cur_style(); Tab *t = curtab(); fillr(dc, &LY.navbar, lay_col(L"navbar", st->layout == LAY_HEADER ? p->cap : p->tool)); lay_paint_widgets(dc); fill4(dc, 0, LY.navbar.bottom - 1, LY.navbar.right, LY.navbar.bottom, p->line); SelectObject(dc, S.font);
     tb_btn(dc, &LY.back, 0, t->hidx > 0, in_rect(&LY.back, g_mx, g_my)); tb_btn(dc, &LY.fwd, 1, t->hidx < t->hist.n - 1, in_rect(&LY.fwd, g_mx, g_my)); tb_btn(dc, &LY.up, 2, t->path[0] != 0, in_rect(&LY.up, g_mx, g_my)); tb_btn(dc, &LY.refresh, 3, 1, in_rect(&LY.refresh, g_mx, g_my));
     tb_btn(dc, &LY.menu, 4, 1, in_rect(&LY.menu, g_mx, g_my)); tb_btn(dc, &LY.setb, 11, 1, in_rect(&LY.setb, g_mx, g_my)); tb_btn(dc, &LY.cmdb, 10, 1, in_rect(&LY.cmdb, g_mx, g_my)); tb_btn(dc, &LY.osb, 12, 1, in_rect(&LY.osb, g_mx, g_my));
-    int rr = st->round > 12 ? (LY.addr.bottom - LY.addr.top) / 2 : st->round; rrect(dc, &LY.addr, p->input, p->input_border, rr, 1); if (!S.addr_edit) draw_crumbs(dc);
-    rrect(dc, &LY.search, p->input, p->input_border, rr, 1); RECT mg = { LY.search.left + px(4), LY.search.top, LY.search.left + px(4) + (LY.search.bottom - LY.search.top), LY.search.bottom }; tb_glyph(dc, 5, &mg, p->dim);
+    int rr = st->round > 12 ? (LY.addr.bottom - LY.addr.top) / 2 : st->round; rrect(dc, &LY.addr, lay_col(L"addr", p->input), p->input_border, rr, 1); if (!S.addr_edit) draw_crumbs(dc);
+    rrect(dc, &LY.search, lay_col(L"search", p->input), p->input_border, rr, 1); RECT mg = { LY.search.left + px(4), LY.search.top, LY.search.left + px(4) + (LY.search.bottom - LY.search.top), LY.search.bottom }; tb_glyph(dc, 5, &mg, p->dim);
     int fh = LY.search.bottom - LY.search.top, bs = px(14); RECT cb = { LY.sub.left + px(2), LY.sub.top + (fh - bs) / 2, LY.sub.left + px(2) + bs, LY.sub.top + (fh - bs) / 2 + bs }; draw_check(dc, &cb, C.search_subfolders, in_rect(&LY.sub, g_mx, g_my), 0);
     SelectObject(dc, S.font_small); RECT sl = { cb.right + px(3), LY.sub.top, LY.sub.right, LY.sub.bottom }; textr(dc, L"Sub", &sl, TL, p->text); SelectObject(dc, S.font);
     if (in_rect(&LY.sdrop, g_mx, g_my)) rrect(dc, &LY.sdrop, p->hover, p->hover, 3, 0); int cx = (LY.sdrop.left + LY.sdrop.right) / 2, cy = (LY.sdrop.top + LY.sdrop.bottom) / 2; linec(dc, cx - 4, cy - 2, cx, cy + 2, p->dim, 2); linec(dc, cx, cy + 2, cx + 5, cy - 2, p->dim, 2);
@@ -3744,7 +4121,7 @@ static void draw_content(HDC dc) {
         fill4(dc, h.left, h.bottom - 1, h.right, h.bottom, p->line); }
     HRGN rg = CreateRectRgn(LY.body.left, LY.body.top, LY.body.right, LY.body.bottom); SelectClipRgn(dc, rg); DeleteObject(rg);
     int first = 0, last = t->nv - 1; if (m == 0) { int rh = px(st->row_h); first = t->scroll / rh; last = (t->scroll + LY.body.bottom - LY.body.top) / rh; if (last >= t->nv) last = t->nv - 1; }
-    int c[5]; col_x(LY.body.right - LY.body.left, c); int gt = gutter();
+    int c[5]; col_x(LY.body.right - LY.body.left, c); int gt = gutter(); if (m == 3) { draw_thispc(dc); first = 0; last = -1; }
     for (int vi = first < 0 ? 0 : first; vi <= last; vi++) {
         Item *it = &t->it[t->view[vi]]; RECT r = item_rect(vi); if (r.bottom < LY.body.top || r.top > LY.body.bottom) continue; int hov = in_rect(&r, g_mx, g_my) && in_rect(&LY.body, g_mx, g_my) && !g_in.dragging; COLORREF bg = p->bg, fg = p->text;
         if (m == 0 && st->zebra && (vi & 1)) bg = p->zebra; if (it->sel) { bg = p->sel; fg = p->sel_text; } else if (hov) bg = p->hover;
@@ -3768,7 +4145,7 @@ static void draw_content(HDC dc) {
             if (C.checkboxes && it->kind != 1 && (it->sel || (in_rect(&r, g_mx, g_my) && in_rect(&LY.body, g_mx, g_my)))) { RECT cb = check_rect(vi); draw_check(dc, &cb, it->sel, in_rect(&cb, g_mx, g_my), 1); }
         }
     }
-    if (!t->nv) { SelectObject(dc, S.font); RECT r = LY.body; r.top += px(30); textr(dc, S.status_msg[0] && !t->searching ? S.status_msg : (t->searching ? L"Searching..." : (t->filter[0] ? L"No matching items" : L"This folder is empty")), &r, DT_CENTER | DT_SINGLELINE, p->dim); }
+    if (!t->nv) { SelectObject(dc, S.font); RECT r = LY.body; r.top += px(30); textr(dc, S.status_msg[0] && !t->searching ? S.status_msg : (t->searching ? L"Searching..." : (t->filter[0] ? L"No matching items" : (!wcscmp(t->path, L"::trash") ? L"The Recycle Bin is empty" : (!wcscmp(t->path, L"::games") ? L"No games yet - right-click and choose Add game to back up its saves" : !wcscmp(t->path, L"::apps") ? L"No programs found - use Add application" : L"This folder is empty")))), &r, DT_CENTER | DT_SINGLELINE, p->dim); }
     if (g_in.rb_on) { RECT q = { g_in.rb_x0 < g_in.rb_x1 ? g_in.rb_x0 : g_in.rb_x1, 0, g_in.rb_x0 < g_in.rb_x1 ? g_in.rb_x1 : g_in.rb_x0, 0 }; int y0 = g_in.rb_y0 - t->scroll + LY.body.top, y1 = g_in.rb_y1 - t->scroll + LY.body.top; q.top = y0 < y1 ? y0 : y1; q.bottom = y0 < y1 ? y1 : y0; q.left += LY.body.left; q.right += LY.body.left;
         fill_alpha(dc, &q, p->accent, 60); framer(dc, &q, p->accent); }
     SelectClipRgn(dc, NULL);
@@ -3776,7 +4153,7 @@ static void draw_content(HDC dc) {
     if (th > vh && vh > 0) { int tl = vh * vh / th; if (tl < px(24)) tl = px(24); int rng = vh - tl, mx = th - vh; int ty = LY.sb.top + (mx ? (int)((double)t->scroll / mx * rng) : 0); RECT tr = { LY.sb.left + px(3), ty, LY.sb.right - px(3), ty + tl }; rrect(dc, &tr, S.dragsb ? mixc(p->sb_thumb, p->text, 0.3) : p->sb_thumb, p->sb_thumb, 4, 0); }
 }
 static void draw_nav(HDC dc) {
-    const Pal *p = &S.pal; const Style *st = cur_style(); Tab *t = curtab(); RECT nr = LY.nav; fillr(dc, &nr, p->side); fill4(dc, nr.right - 1, nr.top, nr.right, nr.bottom, p->line);
+    const Pal *p = &S.pal; const Style *st = cur_style(); Tab *t = curtab(); RECT nr = LY.nav; fillr(dc, &nr, lay_col(L"nav", p->side)); if (C.nav_right) fill4(dc, nr.left, nr.top, nr.left + 1, nr.bottom, p->line); else fill4(dc, nr.right - 1, nr.top, nr.right, nr.bottom, p->line);
     HRGN rg = CreateRectRgn(nr.left, nr.top, nr.right - 1, nr.bottom); SelectClipRgn(dc, rg); DeleteObject(rg); int rh = px(st->nav_row), y = nr.top + px(4) - S.nav_scroll, rr = st->round > 8 ? 6 : st->round;
     if (!S.nnav || g_nav_dirty) nav_rebuild();
     for (int i = 0; i < S.nnav; i++, y += rh) { NavEnt *e = &S.nav[i]; RECT r = { nr.left + px(4), y, nr.right - px(6), y + rh }; if (r.bottom < nr.top || r.top > nr.bottom) continue;
@@ -3791,7 +4168,7 @@ static void draw_nav(HDC dc) {
     SelectClipRgn(dc, NULL);
 }
 static void draw_preview(HDC dc) {
-    if (LY.preview.right - LY.preview.left < 2) return; const Pal *p = &S.pal; RECT pr = LY.preview; fillr(dc, &pr, p->side); fill4(dc, pr.left, pr.top, pr.left + 1, pr.bottom, p->line);
+    if (LY.preview.right - LY.preview.left < 2) return; const Pal *p = &S.pal; RECT pr = LY.preview; fillr(dc, &pr, lay_col(L"preview", p->side)); fill4(dc, pr.left, pr.top, pr.left + 1, pr.bottom, p->line);
     if (in_rect(&LY.split, g_mx, g_my)) fill4(dc, LY.split.left + px(2), LY.split.top, LY.split.left + px(4), LY.split.bottom, p->accent);
     HRGN rg = CreateRectRgn(pr.left + 1, pr.top, pr.right, pr.bottom); SelectClipRgn(dc, rg); DeleteObject(rg); PV *v = &g_pv;
     if (!S.prev.path[0]) { SelectObject(dc, S.font); textr(dc, L"Select a file to preview", &pr, TC, p->dim); SelectClipRgn(dc, NULL); g_pc_panel.nb = 0; return; }
@@ -3802,7 +4179,7 @@ static void draw_preview(HDC dc) {
     SelectClipRgn(dc, NULL);
 }
 static void draw_status(HDC dc) {
-    const Pal *p = &S.pal; Tab *t = curtab(); RECT r = LY.status; fillr(dc, &r, p->status); fill4(dc, r.left, r.top, r.right, r.top + 1, p->line); SelectObject(dc, S.font_small); u64 by; int ns = sel_count(t, &by); WCHAR m[400], b[40], b2[40];
+    const Pal *p = &S.pal; Tab *t = curtab(); RECT r = LY.status; fillr(dc, &r, lay_col(L"status", p->status)); fill4(dc, r.left, r.top, r.right, r.top + 1, p->line); SelectObject(dc, S.font_small); u64 by; int ns = sel_count(t, &by); WCHAR m[400], b[40], b2[40];
     int nd = 0, nf = 0; u64 tot = 0; for (int i = 0; i < t->nv; i++) { Item *x = &t->it[t->view[i]]; if (x->dir) nd++; else { nf++; tot += x->size; } }
     if (S.status_msg[0] && (t->searching || InterlockedCompareExchange(&S.busy, 0, 0))) scpy(m, 400, S.status_msg);
     else { fmt_bytes(tot, b, 40); if (C.show_counts) wfmt(m, 400, L"%d folder%ls, %d file%ls  -  %ls", nd, nd == 1 ? L"" : L"s", nf, nf == 1 ? L"" : L"s", b); else wfmt(m, 400, L"%d item%ls", t->nv, t->nv == 1 ? L"" : L"s");
@@ -3813,7 +4190,7 @@ static void draw_status(HDC dc) {
 }
 static void draw_client(HDC dc, int W, int H) {
     const Pal *p = &S.pal; RECT all = { 0, 0, W, H }; fillr(dc, &all, p->bg); do_layout(W, H); SetBkMode(dc, TRANSPARENT);
-    draw_caption(dc); draw_ribbon(dc); draw_toolbar(dc); draw_tabs(dc); draw_nav(dc); draw_content(dc); draw_preview(dc); draw_status(dc);
+    draw_caption(dc); draw_ribbon(dc); draw_toolbar(dc); draw_tabs(dc); draw_nav(dc); draw_content(dc); draw_preview(dc); draw_status(dc); lay_draw_launchers(dc); lay_overlay(dc, W, H);
     if (!g_maxed) { RECT wb = all; HBRUSH nb = (HBRUSH)GetStockObject(NULL_BRUSH); (void)nb; framer(dc, &wb, p->border); }
     if (g_in.dragging) { WCHAR t[300]; u64 by; int ns = sel_count(curtab(), &by); const WCHAR *dest = NULL; if (g_in.drop_item >= 0 && g_in.drop_item < curtab()->nv) dest = curtab()->it[curtab()->view[g_in.drop_item]].name; else if (g_in.drop_nav >= 0 && g_in.drop_nav < S.nnav) dest = S.nav[g_in.drop_nav].label;
         wfmt(t, 300, L"%ls %d item%ls%ls%ls", GetKeyState(VK_CONTROL) < 0 ? L"Copy" : L"Move", ns, ns == 1 ? L"" : L"s", dest ? L" to " : L"", dest ? dest : L""); SelectObject(dc, S.font); int tw = text_w(dc, t) + px(20), th = px(26); RECT r = { g_mx + px(14), g_my + px(10), g_mx + px(14) + tw, g_my + px(10) + th };
@@ -3822,9 +4199,107 @@ static void draw_client(HDC dc, int W, int H) {
 }
 
 /* ========================================================================== */
+/* EXTRAS: This-PC tiles, built-in extension icons, alpha custom icons        */
+/* ========================================================================== */
+static int pc_style(void) {
+    const WCHAR *k = cur_style()->key;
+    if (!wcscmp(k, L"macos") || !wcscmp(k, L"ubuntu") || !wcscmp(k, L"zorin") || !wcscmp(k, L"mint") || !wcscmp(k, L"chromeos") || !wcscmp(k, L"kde")) return 1;
+    if (!wcscmp(k, L"total") || !wcscmp(k, L"mc") || !wcscmp(k, L"opus") || !wcscmp(k, L"haiku") || !wcscmp(k, L"neon") || !wcscmp(k, L"xfce")) return 2; return 0;
+}
+static int pc_geom(int *cw, int *chh, int *per) {
+    int bw = LY.body.right - LY.body.left - px(24), s = pc_style(); if (s == 0) { *cw = px(284); *chh = px(86); } else if (s == 1) { *cw = px(172); *chh = px(146); } else { *cw = bw; *chh = px(34); }
+    *per = bw / (*cw ? *cw : 1); if (*per < 1 || s == 2) *per = 1; return 3;
+}
+static int pc_nf(void) { Tab *t = curtab(); int n = 0; for (int i = 0; i < t->nv; i++) if (t->it[t->view[i]].kind != 1) n++; return n; }
+static RECT pc_rect(int vi) {
+    int cw, ch, per; pc_geom(&cw, &ch, &per); int nf = pc_nf(), hh = px(38), x0 = LY.body.left + px(12), y0 = LY.body.top + px(6), s = pc_style();
+    int yd = y0 + (nf ? hh + ((nf + per - 1) / per) * ch + px(12) : 0); RECT r; int k = vi < nf ? vi : vi - nf, base = vi < nf ? y0 + hh : yd + hh;
+    r.left = x0 + (k % per) * cw; r.top = base + (k / per) * ch; r.right = r.left + cw - (s == 2 ? 0 : px(8)); r.bottom = r.top + ch - px(6); return r;
+}
+static int pc_total_h(void) {
+    Tab *t = curtab(); int cw, ch, per; pc_geom(&cw, &ch, &per); int nf = pc_nf(), nd = t->nv - nf, hh = px(38); int h = px(6);
+    if (nf) h += hh + ((nf + per - 1) / per) * ch + px(12); if (nd) h += hh + ((nd + per - 1) / per) * ch; return h + px(16) + px(C.drag_margin);
+}
+static void paint_drive(HDC dc, int x, int y, int s, COLORREF col) {
+    RECT b = { x, y + s * 28 / 100, x + s, y + s * 78 / 100 }; rrect(dc, &b, col, shadec(col, 0.65), s / 9, 1);
+    fill4(dc, x + s / 10, y + s * 40 / 100, x + s * 9 / 10, y + s * 46 / 100, shadec(col, 0.55)); RECT led = { x + s * 76 / 100, y + s * 60 / 100, x + s * 86 / 100, y + s * 68 / 100 }; fillr(dc, &led, RGB(80, 220, 100));
+    fill4(dc, x + s / 8, y + s * 62 / 100, x + s * 5 / 10, y + s * 66 / 100, shadec(col, 1.3));
+}
+static void pc_titles(WCHAR *h1, WCHAR *h2, int nf, int nd) {
+    const WCHAR *k = cur_style()->key; int s = pc_style();
+    if (!wcscmp(k, L"macos")) { wfmt(h1, 60, L"Favourites"); wfmt(h2, 60, L"Locations"); }
+    else if (!wcscmp(k, L"chromeos")) { wfmt(h1, 60, L"My files"); wfmt(h2, 60, L"Storage devices"); }
+    else if (s == 1) { wfmt(h1, 60, L"Places"); wfmt(h2, 60, L"Devices"); }
+    else if (s == 2) { wfmt(h1, 60, L"Folders"); wfmt(h2, 60, L"Drives"); }
+    else { wfmt(h1, 60, L"Folders (%d)", nf); wfmt(h2, 60, L"Devices and drives (%d)", nd); }
+}
+static void draw_thispc(HDC dc) {
+    const Pal *p = &S.pal; Tab *t = curtab(); int s = pc_style(), cw, ch, per; pc_geom(&cw, &ch, &per); int nf = pc_nf(), nd = t->nv - nf, rr = cur_style()->round > 8 ? 8 : cur_style()->round; WCHAR h1[64], h2[64]; pc_titles(h1, h2, nf, nd); int bud = 8;
+    SelectObject(dc, S.font_big);
+    for (int sec = 0; sec < 2; sec++) { int cnt = sec ? nd : nf; if (!cnt) continue; RECT r0 = item_rect(sec ? nf : 0); int hy = r0.top - px(32); RECT hr = { LY.body.left + px(14), hy, LY.body.right - px(10), hy + px(26) }; const WCHAR *tt = sec ? h2 : h1;
+        textr(dc, tt, &hr, TL, s == 2 ? p->accent : p->text); int tw = text_w(dc, tt); fill4(dc, hr.left + tw + px(10), hy + px(13), hr.right, hy + px(14), p->line); }
+    SelectObject(dc, S.font);
+    for (int vi = 0; vi < t->nv; vi++) {
+        Item *it = &t->it[t->view[vi]]; RECT r = item_rect(vi); if (r.bottom < LY.body.top || r.top > LY.body.bottom) continue; int hov = in_rect(&r, g_mx, g_my) && in_rect(&LY.body, g_mx, g_my) && !g_in.dragging; COLORREF fg = p->text, bg = p->bg;
+        if (it->sel) { bg = p->sel; fg = p->sel_text; } else if (hov) bg = p->hover; if (g_in.dragging && vi == g_in.drop_item) { bg = p->accent; fg = contrast(p->accent); }
+        if (bg != p->bg) rrect(dc, &r, bg, bg, rr, 0); else if (s == 0 && it->kind == 1) rrect(dc, &r, p->bg, p->line, rr, 1);
+        if (vi == t->focus) { RECT q = { r.left + 1, r.top + 1, r.right - 1, r.bottom - 1 }; framer(dc, &q, it->sel ? fg : p->dim); }
+        int drive = it->kind == 1; double used = (drive && it->size) ? 1.0 - (double)it->freeb / (double)it->size : 0; WCHAR a[40], b[40], line[100]; if (drive) { fmt_bytes(it->freeb, a, 40); fmt_bytes(it->size, b, 40); wfmt(line, 100, L"%ls free of %ls", a, b); }
+        COLORREF barc = used > 0.9 ? RGB(218, 56, 56) : p->accent;
+        if (s == 0) { int isz = px(50); int ix = r.left + px(12), iy = r.top + (r.bottom - r.top - isz) / 2; if (drive) paint_drive(dc, ix, iy, isz, mixc(p->dim, p->text, 0.35)); else draw_item_icon(dc, it, ix, iy, isz, 0, &bud, 0);
+            RECT nr = { ix + isz + px(12), r.top + px(drive ? 12 : 0), r.right - px(8), drive ? r.top + px(34) : r.bottom }; textr(dc, it->name, &nr, TL, fg);
+            if (drive) { RECT bar = { nr.left, r.top + px(38), r.right - px(14), r.top + px(48) }; rrect(dc, &bar, p->sb_track, p->border, 2, 1); if (it->size) { RECT f = bar; f.right = f.left + (int)((bar.right - bar.left) * used); if (f.right > f.left) rrect(dc, &f, barc, barc, 2, 0); }
+                SelectObject(dc, S.font_small); RECT lr = { nr.left, r.top + px(52), r.right - px(8), r.bottom - px(4) }; textr(dc, line, &lr, TL, it->sel ? fg : p->dim); SelectObject(dc, S.font); } }
+        else if (s == 1) { int isz = px(64); int ix = r.left + (r.right - r.left - isz) / 2; if (drive) paint_drive(dc, ix, r.top + px(12), isz, mixc(p->dim, p->text, 0.35)); else draw_item_icon(dc, it, ix, r.top + px(12), isz, 0, &bud, 0);
+            RECT nr = { r.left + px(4), r.top + px(82), r.right - px(4), r.top + px(102) }; textr(dc, it->name, &nr, TC | DT_END_ELLIPSIS, fg);
+            if (drive) { SelectObject(dc, S.font_small); RECT lr = { r.left + px(4), r.top + px(104), r.right - px(4), r.bottom - px(2) }; textr(dc, line, &lr, TC | DT_END_ELLIPSIS, it->sel ? fg : p->dim); SelectObject(dc, S.font);
+                RECT bar = { r.left + px(18), r.bottom - px(12), r.right - px(18), r.bottom - px(6) }; rrect(dc, &bar, p->sb_track, p->border, 2, 1); RECT f = bar; f.right = f.left + (int)((bar.right - bar.left) * used); if (it->size && f.right > f.left) rrect(dc, &f, barc, barc, 2, 0); } }
+        else { int isz = px(20); int ix = r.left + px(8), iy = r.top + (r.bottom - r.top - isz) / 2; if (drive) paint_drive(dc, ix, iy, isz, mixc(p->dim, p->text, 0.35)); else draw_item_icon(dc, it, ix, iy, isz, 0, &bud, 0);
+            RECT nr = { ix + isz + px(10), r.top, r.right - px(drive ? 360 : 10), r.bottom }; textr(dc, it->name, &nr, TL, fg);
+            if (drive) { RECT lr = { r.right - px(220), r.top, r.right - px(10), r.bottom }; textr(dc, line, &lr, TL | DT_RIGHT, it->sel ? fg : p->dim); RECT bar = { r.right - px(350), r.top + px(11), r.right - px(236), r.bottom - px(11) }; rrect(dc, &bar, p->sb_track, p->border, 2, 1); RECT f = bar; f.right = f.left + (int)((bar.right - bar.left) * used); if (it->size && f.right > f.left) rrect(dc, &f, barc, barc, 2, 0); } }
+    }
+}
+/* ---- built-in icons for every extension ---- */
+static COLORREF ext_color(const WCHAR *e) {
+    if (ext_in(e, L".png.jpg.jpeg.gif.bmp.webp.tif.tiff.svg.heic.jfif.psd.raw.") ) return RGB(46, 158, 107); if (ext_in(e, L".mp4.avi.mkv.mov.wmv.flv.webm.mpg.mpeg.m4v.3gp.ts.m2ts.vob.ogv.asf.divx.rm.rmvb.mts.f4v.")) return RGB(142, 91, 216);
+    if (ext_in(e, L".mp3.wav.flac.ogg.m4a.wma.aac.mid.midi.opus.")) return RGB(233, 30, 140); if (ext_in(e, L".pdf.")) return RGB(208, 49, 45); if (ext_in(e, L".doc.docx.rtf.odt.dot.dotx.")) return RGB(43, 108, 176);
+    if (ext_in(e, L".xls.xlsx.csv.ods.xlsm.tsv.")) return RGB(30, 123, 69); if (ext_in(e, L".ppt.pptx.odp.pps.ppsx.")) return RGB(211, 84, 0); if (ext_in(e, L".zip.rar.7z.tar.gz.bz2.xz.iso.cab.tgz.img.")) return RGB(201, 146, 26);
+    if (ext_in(e, L".c.h.cpp.hpp.cc.py.js.ts.html.htm.css.json.xml.java.cs.go.rs.php.rb.lua.sh.bat.cmd.ps1.sql.yml.yaml.")) return RGB(84, 110, 122); if (ext_in(e, L".txt.md.log.ini.cfg.conf.inf.reg.")) return RGB(117, 117, 117);
+    if (ext_in(e, L".ttf.otf.ttc.fon.woff.")) return RGB(109, 76, 65); if (ext_in(e, L".dll.sys.drv.ocx.so.dat.bin.tmp.bak.")) return RGB(96, 125, 139);
+    unsigned h = 7; for (const WCHAR *c = PathFindExtensionW(e); *c; c++) h = h * 31 + (*c | 32); static const COLORREF pal[8] = { RGB(0, 150, 136), RGB(63, 81, 181), RGB(121, 85, 72), RGB(0, 137, 190), RGB(156, 39, 176), RGB(76, 175, 80), RGB(255, 87, 34), RGB(96, 125, 139) }; return pal[h & 7];
+}
+static void paint_ext_icon(HDC dc, const WCHAR *path, int x, int y, int s, int is_dir_unused) {
+    (void)is_dir_unused; const Pal *p = &S.pal; COLORREF col = ext_color(path); int l = x + s * 16 / 100, r = x + s * 86 / 100, t = y + s * 4 / 100, b = y + s * 96 / 100, f = s * 24 / 100; COLORREF paper = p->dark ? RGB(70, 72, 78) : RGB(250, 250, 252), edge = p->dark ? RGB(130, 132, 140) : RGB(150, 152, 160);
+    POINT pg[6] = { { l, t }, { r - f, t }, { r, t + f }, { r, b }, { l, b }, { l, t } }; HBRUSH br = CreateSolidBrush(paper); HPEN pn = CreatePen(PS_SOLID, 1, edge); HGDIOBJ ob = SelectObject(dc, br), op = SelectObject(dc, pn); Polygon(dc, pg, 5); SelectObject(dc, ob); SelectObject(dc, op); DeleteObject(br); DeleteObject(pn);
+    POINT fo[3] = { { r - f, t }, { r - f, t + f }, { r, t + f } }; poly(dc, fo, 3, mixc(paper, edge, 0.35)); int bh = s * 30 / 100; RECT band = { l, b - bh - s * 8 / 100, r, b - s * 8 / 100 }; fillr(dc, &band, col);
+    WCHAR e[8]; const WCHAR *ex = PathFindExtensionW(path); if (*ex == '.') ex++; int n = 0; while (ex[n] && n < 4) { e[n] = ex[n]; n++; } e[n] = 0; CharUpperW(e);
+    if (s >= 24 && n) { static HFONT f1; static int fs; int want = s * (n > 3 ? 17 : 20) / 100; if (want < 7) want = 7; if (!f1 || fs != want) { if (f1) DeleteObject(f1); f1 = make_font(L"Segoe UI", want, 700); fs = want; } HGDIOBJ of = SelectObject(dc, f1); int om = SetBkMode(dc, TRANSPARENT); textr(dc, e, &band, TC, RGB(255, 255, 255)); SetBkMode(dc, om); SelectObject(dc, of); }
+    else if (s >= 14) { for (int i = 0; i < 3; i++) fill4(dc, l + s * 14 / 100, t + s * (22 + i * 12) / 100, r - s * 14 / 100, t + s * (26 + i * 12) / 100, mixc(paper, edge, 0.5)); }
+}
+/* ---- custom icons: any image (alpha preserved), .ico, or icon inside an exe/dll ---- */
+static void cicons_flush(void) { for (int i = 0; i < 48; i++) { if (g_cicons[i].ic) DestroyIcon(g_cicons[i].ic); if (g_cicons[i].bm) DeleteObject(g_cicons[i].bm); if (g_cicons[i].gp && G.DelI) G.DelI(g_cicons[i].gp); } memset(g_cicons, 0, sizeof g_cicons); g_cic_next = 0; }
+static CIcon *cicon_load2(const WCHAR *file) {
+    for (int i = 0; i < 48; i++) if (g_cicons[i].tried && !wcscmp(g_cicons[i].key, file)) return &g_cicons[i];
+    CIcon *c = &g_cicons[g_cic_next]; g_cic_next = (g_cic_next + 1) % 48; if (c->ic) DestroyIcon(c->ic); if (c->bm) DeleteObject(c->bm); if (c->gp && G.DelI) G.DelI(c->gp); memset(c, 0, sizeof *c); scpy(c->key, MAX_PATH, file); c->tried = 1;
+    if (ext_in(file, L".exe.dll.icl.scr.ocx.")) { HICON big = NULL; if (ExtractIconExW(file, 0, &big, NULL, 1) >= 1 && big) c->ic = big; return c; }
+    if (ext_in(file, L".ico.")) c->ic = (HICON)LoadImageW(NULL, file, IMAGE_ICON, 128, 128, LR_LOADFROMFILE);
+    if (!c->ic && G.ok) { void *img = NULL; if (!G.FromFile(file, &img) && img) { UINT w = 0, h = 0; G.W(img, &w); G.H(img, &h); if (w && h) { c->gp = img; c->w = (int)w; c->h = (int)h; } else G.DelI(img); } }
+    return c;
+}
+static int draw_custom_icon2(HDC dc, const Item *it, int x, int y, int s) {
+    if (!C.icon_map.n) return 0; const WCHAR *f = icon_map_find(it->path); if (!f) { if (it->dir) f = icon_map_find(L"::folder"); else { const WCHAR *e = PathFindExtensionW(it->name); if (*e) f = icon_map_find(e); } }
+    if (!f || !path_exists(f)) return 0; CIcon *c = cicon_load2(f); if (c->ic) { DrawIconEx(dc, x, y, c->ic, s, s, 0, NULL, DI_NORMAL); return 1; }
+    if (c->gp) { double k = (double)s / (c->w > c->h ? c->w : c->h); int dw = (int)(c->w * k), dh = (int)(c->h * k); if (dw < 1) dw = 1; if (dh < 1) dh = 1; void *g = NULL; G.FromHDC(dc, &g); if (g) { G.Interp(g, 7); G.Draw(g, c->gp, x + (s - dw) / 2, y + (s - dh) / 2, dw, dh); G.DelG(g); return 1; } }
+    return 0;
+}
+
+/* ========================================================================== */
 /* COMMANDS, MENUS AND DIALOGS                                                */
 /* ========================================================================== */
 static void place_edits(void);
+static void backup_full(int restore);
+static void lay_commit(void);
+static void choose_video_player(void);
 static void style_changed(void) { update_pal(); apply_fonts(); set_title(); g_nav_dirty = 1; cfg_save(); place_edits(); redraw(); }
 static int exe_path(WCHAR *o, int cap) { return (int)GetModuleFileNameW(NULL, o, cap); }
 static int run_at_login_enabled(void) { HKEY k; int on = C.run_at_login; if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &k) == ERROR_SUCCESS) { DWORD ty, n = 0; on = RegQueryValueExW(k, L"WinShellFM", NULL, &ty, NULL, &n) == ERROR_SUCCESS; RegCloseKey(k); } return on; }
@@ -3858,15 +4333,16 @@ static void create_shortcuts(int desktop) {
     Tab *t = curtab(); SL s = { 0 }; collect_sel(t, &s); if (!s.n) { toast(L"Select a file or folder first"); free(s.v); return; } WCHAR dd[MAX_PATH]; int okc = 0;
     if (desktop) { if (!SHGetSpecialFolderPathW(NULL, dd, CSIDL_DESKTOPDIRECTORY, TRUE)) { WCHAR h[MAX_PATH]; home_dir(h); path_join(dd, MAX_PATH, h, L"Desktop"); CreateDirectoryW(dd, NULL); } } else scpy(dd, MAX_PATH, t->path);
     for (int i = 0; i < s.n; i++) { WCHAR nm[MAX_PATH], stem[MAX_PATH], out[MAX_PATH]; scpy(stem, MAX_PATH, base_name(s.v[i])); wfmt(nm, MAX_PATH, L"%ls - Shortcut.lnk", stem);
-        if (desktop) wfmt(nm, MAX_PATH, L"%ls.lnk", stem); path_join(out, MAX_PATH, dd, nm); if (path_exists(out)) unique_new(dd, stem, L".lnk", out, MAX_PATH); if (make_lnk(s.v[i], out)) okc++; }
+        if (desktop) wfmt(nm, MAX_PATH, L"%ls.lnk", stem); path_join(out, MAX_PATH, dd, nm); if (path_exists(out)) unique_new(dd, stem, L".lnk", out, MAX_PATH); if (make_lnk(s.v[i], out)) { okc++; if (desktop && sl_find(&C.shortcuts, out) < 0) sl_add(&C.shortcuts, out); } }
     for (int i = 0; i < s.n; i++) free(s.v[i]); free(s.v);
+    if (okc && desktop) cfg_save();
     WCHAR m[200]; if (okc) wfmt(m, 200, desktop ? L"Shortcut created on the Desktop (%d)" : L"Shortcut created (%d)", okc); else scpy(m, 200, L"Could not create the shortcut"); toast(m); if (!desktop) reload(1);
 }
 static void run_as_admin(Item *it) { if (!it) return; WCHAR d[MAX_PATH]; parent_of(it->path, d); HINSTANCE r = ShellExecuteW(S.hwnd, L"runas", it->path, NULL, d[0] ? d : NULL, SW_SHOWNORMAL); if ((INT_PTR)r <= 32) toast(L"Could not run as administrator"); }
 /* ---- folder colours / custom icons ---- */
 static void set_map(SL *l, const WCHAR *key, const WCHAR *val) {
     int kl = lstrlenW(key); for (int i = 0; i < l->n; i++) { const WCHAR *bar = wcsrchr(l->v[i], '|'); if (bar && (int)(bar - l->v[i]) == kl && !_wcsnicmp(l->v[i], key, kl)) { sl_del(l, i); break; } }
-    if (val && val[0]) { WCHAR *e = (WCHAR *)malloc((kl + lstrlenW(val) + 2) * sizeof(WCHAR)); wsprintfW(e, L"%ls|%ls", key, val); sl_add(l, e); free(e); } cfg_save(); redraw();
+    if (val && val[0]) { WCHAR *e = (WCHAR *)malloc((kl + lstrlenW(val) + 2) * sizeof(WCHAR)); wsprintfW(e, L"%ls|%ls", key, val); sl_add(l, e); free(e); } cfg_save(); cicons_flush(); redraw();
 }
 static const u32 FOLDER_PALETTE[] = { 0xF8D775, 0xE95420, 0xE74C3C, 0xF39C12, 0x2ECC71, 0x1ABC9C, 0x3498DB, 0x8E5BD8, 0xE91E8C, 0x95A5A6, 0x34495E, 0x8B5A2B };
 static const WCHAR *FOLDER_PAL_NAMES[] = { L"Yellow", L"Orange", L"Red", L"Amber", L"Green", L"Teal", L"Blue", L"Purple", L"Pink", L"Grey", L"Slate", L"Brown" };
@@ -3877,11 +4353,11 @@ static void apply_folder_color(int idx) {
 static void pick_icon(int scope) {   /* 0 this item, 1 all of this extension, 2 all folders, 3 remove for item/ext */
     Tab *t = curtab(); Item *f = focus_item(t); if (!f && scope != 2) return; WCHAR key[MAX_PATH];
     if (scope == 2) lstrcpyW(key, L"::folder"); else if (scope == 1) { const WCHAR *e = PathFindExtensionW(f->name); if (!*e) { toast(L"This file has no extension"); return; } lstrcpyW(key, e); } else lstrcpyW(key, f->path);
-    WCHAR file[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Icons and images\0*.ico;*.png;*.jpg;*.jpeg;*.bmp;*.gif\0All files\0*.*\0"; o.lpstrFile = file; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (!GetOpenFileNameW(&o)) return; set_map(&C.icon_map, key, file); memset(g_cicons, 0, sizeof g_cicons); toast(L"Custom icon set");
+    WCHAR file[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Icons and images\0*.ico;*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp;*.jfif;*.exe;*.dll\0All files\0*.*\0"; o.lpstrFile = file; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileNameW(&o)) return; set_map(&C.icon_map, key, file); cicons_flush(); toast(L"Custom icon set");
 }
 static void clear_icon(void) {
-    Tab *t = curtab(); Item *f = focus_item(t); if (!f) return; set_map(&C.icon_map, f->path, NULL); const WCHAR *e = PathFindExtensionW(f->name); if (*e) set_map(&C.icon_map, e, NULL); if (f->dir) set_map(&C.icon_map, L"::folder", NULL); toast(L"Custom icon removed");
+    Tab *t = curtab(); Item *f = focus_item(t); if (!f) return; set_map(&C.icon_map, f->path, NULL); const WCHAR *e = PathFindExtensionW(f->name); if (*e) set_map(&C.icon_map, e, NULL); if (f->dir) set_map(&C.icon_map, L"::folder", NULL); cicons_flush(); toast(L"Custom icon removed");
 }
 /* ---- Open with ---- */
 typedef struct { WCHAR name[64], path[MAX_PATH]; } OWApp;
@@ -3961,7 +4437,7 @@ static void show_styles(void) {
     Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Styles & Look"); d.w = px(720); d.h = px(660); d.build = styles_build; d.act = styles_act; dlg_foot(&d, 9, L"Done", 1); dlg_run(&d); style_changed();
 }
 /* ---- Settings dialog ---- */
-static struct { int view, sortk, dirs, scale, login, theme; } ST;
+static struct { int view, sortk, dirs, scale, login, theme, apps_name; } ST;
 static const WCHAR *const SZ_NAMES[4] = { L"Min", L"Mid", L"Large", L"Full screen" };
 static void settings_commit(void) {
     static const WCHAR *vv[3] = { L"details", L"icons", L"tiles" }, *sk[4] = { L"name", L"date", L"type", L"size" }, *dd[3] = { L"first", L"last", L"mixed" };
@@ -3972,13 +4448,17 @@ static void settings_build(Dlg *d) {
     static const WCHAR *const vw[3] = { L"Details", L"Icons", L"Tiles" }, *const sk[4] = { L"Name", L"Date modified", L"Type", L"Size" }, *const dd[3] = { L"Folders first", L"Folders last", L"Mixed" }, *const vm[3] = { L"In the preview panel (paused)", L"Open full screen", L"Do not preview (play externally)" };
     switch (d->tab) {
     case 0: dlg_head(d, L"General"); dlg_check(d, 1, L"Restore tabs on start", &C.restore_session); dlg_check(d, 2, L"Show hidden files", &C.show_hidden); dlg_check(d, 3, L"Show folder / file counts and total size in the status bar", &C.show_counts);
-        dlg_check(d, 4, L"Show \"Run as administrator\" in the context menu", &C.admin_menu); dlg_check(d, 5, L"Start with Windows (Run key)", &ST.login); dlg_check(d, 6, L"Keep the command strip (ribbon) open", &C.ribbon_open); break;
+        dlg_check(d, 4, L"Show \"Run as administrator\" in the context menu", &C.admin_menu); dlg_check(d, 5, L"Start with Windows (Run key)", &ST.login); dlg_check(d, 6, L"Keep the command strip (ribbon) open", &C.ribbon_open);
+        dlg_head(d, L"Safety"); dlg_check(d, 7, L"Ask for confirmation before copy / move / delete and when a preview cannot load", &C.confirm_ops); dlg_check(d, 8, L"Delete moves files to the Recycle Bin (Shift+Delete deletes for good)", &C.recycle); dlg_btn(d, 9, L"Empty the Recycle Bin...");
+        dlg_head(d, L"Mouse"); dlg_check(d, 10, L"Double-click on empty space goes up one folder", &C.dbl_up); dlg_spin(d, 11, L"Blank area for drag-select (below / beside items)", &C.drag_margin, 0, 200, 8, L"px"); break;
     case 1: dlg_head(d, L"Appearance"); dlg_btn(d, 20, L"Choose look (Styles dialog)..."); dlg_check(d, 21, L"Dark variant", &C.style_dark); dlg_check(d, 22, L"Use the look's own fonts", &C.style_fonts); dlg_spin(d, 23, L"Interface zoom", &ST.scale, 60, 250, 10, L"%"); dlg_spin(d, 24, L"Font size", &C.font_size, 9, 28, 1, L"pt");
-        dlg_spin(d, 25, L"Icon size (icons view)", &C.icon_size, 32, 160, 16, L"px"); dlg_btn(d, 26, L"Document font..."); dlg_btn(d, 27, L"Add a font file for documents..."); break;
+        dlg_spin(d, 25, L"Icon size (icons view)", &C.icon_size, 32, 160, 16, L"px"); dlg_btn(d, 26, L"Document font..."); dlg_btn(d, 27, L"Add a font file for documents..."); dlg_check(d, 28, L"Built-in icon for every file extension (off = system icons)", &C.ext_icons); dlg_check(d, 29, L"Tile layout for This PC / devices (matches the look)", &C.pc_tiles);
+        dlg_head(d, L"Layout"); dlg_btn(d, 30, L"Open the layout editor (move / resize / recolour elements, save your own theme)..."); dlg_check(d, 31, L"Navigation pane on the right side", &C.nav_right);
+        { static const WCHAR *const an[8] = { L"Computer", L"Programs", L"Apps", L"My PC", L"Applications", L"Wine apps", L"Winlator", L"Launcher" }; dlg_choice(d, 32, L"Name of the apps tab in the side pane", &ST.apps_name, an, 8); } dlg_check(d, 33, L"Hide Windows/Wine system tools in the apps tab", &C.hide_apps_sys); break;
     case 2: dlg_head(d, L"View & files"); dlg_choice(d, 40, L"Default view", &ST.view, vw, 3); dlg_choice(d, 41, L"Sort by", &ST.sortk, sk, 4); dlg_check(d, 42, L"Ascending order", &C.asc); dlg_choice(d, 43, L"Folders", &ST.dirs, dd, 3); dlg_check(d, 44, L"Tree view in the navigation pane", &C.show_tree);
         dlg_check(d, 45, L"Selection tick boxes (hover tick in list, corner tick in grid)", &C.checkboxes); dlg_head(d, L"Thumbnails"); dlg_check(d, 46, L"Show thumbnails", &C.thumbnails); dlg_check(d, 47, L"Photos (jpg / png)", &C.thumb_img); dlg_check(d, 48, L"Video (play badge)", &C.thumb_vid); dlg_check(d, 49, L"Graphics (ico / bmp / gif / webp)", &C.thumb_gfx);
         dlg_head(d, L"Mouse"); dlg_check(d, 50, L"Drag files to move (hold Ctrl to copy)", &C.drag_drop); dlg_check(d, 51, L"Rubber-band (drag box) selection", &C.rubber); break;
-    case 3: dlg_head(d, L"Preview panel"); dlg_check(d, 60, L"Show preview panel", &C.show_preview); dlg_choice(d, 61, L"Video / audio", &C.video_mode, vm, 3);
+    case 3: dlg_head(d, L"Preview panel"); dlg_check(d, 60, L"Show preview panel", &C.show_preview); dlg_choice(d, 61, L"Video / audio", &C.video_mode, vm, 3); dlg_spin(d, 70, L"Ask before previewing files larger than", &C.pv_limit_mb, 1, 500, 5, L"MB"); dlg_btn(d, 71, L"Choose the external video player...");
         dlg_head(d, L"Panel size per file type (drag the divider to fine-tune)"); dlg_choice(d, 62, L"Text", &C.pvsz0, SZ_NAMES, 4); dlg_choice(d, 63, L"Images", &C.pvsz1, SZ_NAMES, 4); dlg_choice(d, 64, L"Video / audio", &C.pvsz2, SZ_NAMES, 4); dlg_choice(d, 65, L"PDF", &C.pvsz3, SZ_NAMES, 4);
         dlg_choice(d, 66, L"Word", &C.pvsz4, SZ_NAMES, 4); dlg_choice(d, 67, L"Excel", &C.pvsz5, SZ_NAMES, 4); dlg_choice(d, 68, L"PowerPoint", &C.pvsz6, SZ_NAMES, 4); dlg_choice(d, 69, L"Archives", &C.pvsz7, SZ_NAMES, 4); break;
     case 4: dlg_head(d, L"Search"); dlg_check(d, 80, L"Search inside subfolders", &C.search_subfolders); dlg_spin(d, 81, L"Maximum results", &C.search_limit, 100, 20000, 100, NULL); dlg_btn(d, 82, L"Clear search history"); dlg_btn(d, 83, L"Clear pinned searches"); dlg_btn(d, 84, L"Clear extension filter"); break;
@@ -3987,21 +4467,423 @@ static void settings_build(Dlg *d) {
     case 6: dlg_head(d, L"Folder colours"); for (int i = 0; i < C.folder_colors.n && i < 60; i++) dlg_item(d, 2000 + i, base_name(C.folder_colors.v[i]), C.folder_colors.v[i], 0);
         dlg_head(d, L"Custom icons"); for (int i = 0; i < C.icon_map.n && i < 60; i++) dlg_item(d, 3000 + i, C.icon_map.v[i], L"Click to remove", 0); dlg_head(d, L"\"Open with\" associations"); for (int i = 0; i < C.assoc.n && i < 60; i++) dlg_item(d, 4000 + i, C.assoc.v[i], L"Click to remove", 0);
         dlg_note(d, L"Use the context menu (Folder colour, Custom icon) to add entries."); break;
-    default: dlg_head(d, L"Backup"); dlg_btn(d, 120, L"Back up settings..."); dlg_btn(d, 121, L"Restore settings..."); dlg_head(d, L"About"); dlg_btn(d, 122, L"About Files(Winlator/Wine)..."); break;
+    default: dlg_head(d, L"Backup"); dlg_btn(d, 123, L"Full backup: settings + custom icons + fonts + desktop shortcuts..."); dlg_btn(d, 124, L"Full restore (adds shortcuts back to the Wine desktop and the Computer tab)..."); dlg_btn(d, 120, L"Back up settings only..."); dlg_btn(d, 121, L"Restore settings only..."); dlg_head(d, L"About"); dlg_btn(d, 122, L"About Files(Winlator/Wine)..."); break;
     }
 }
 static int settings_act(Dlg *d, Row *r, int id) {
     (void)d; (void)r;
     if (id == 20) { show_styles(); return 0; } if (id == 26) { POINT pt; GetCursorPos(&pt); font_menu(pt.x, pt.y); return 0; } if (id == 27) { add_font_file(); return 0; } if (id == 82) sl_clear(&C.search_hist); else if (id == 83) sl_clear(&C.search_pins); else if (id == 84) { C.search_ext[0] = 0; rebuild_view(curtab()); }
     else if (id == 101) add_autostart(); else if (id == 102) run_autostart(1); else if (id >= 1000 && id < 1100) { if (id - 1000 < C.autostart_apps.n) sl_del(&C.autostart_apps, id - 1000); } else if (id >= 2000 && id < 2100) { if (id - 2000 < C.folder_colors.n) sl_del(&C.folder_colors, id - 2000); }
-    else if (id >= 3000 && id < 3100) { if (id - 3000 < C.icon_map.n) sl_del(&C.icon_map, id - 3000); memset(g_cicons, 0, sizeof g_cicons); } else if (id >= 4000 && id < 4100) { if (id - 4000 < C.assoc.n) sl_del(&C.assoc, id - 4000); }
+    else if (id >= 3000 && id < 3100) { if (id - 3000 < C.icon_map.n) sl_del(&C.icon_map, id - 3000); cicons_flush(); } else if (id >= 4000 && id < 4100) { if (id - 4000 < C.assoc.n) sl_del(&C.assoc, id - 4000); }
+    else if (id == 123) { backup_full(0); return 0; } else if (id == 124) { backup_full(1); return 0; } else if (id == 9) { do_empty_trash(); return 0; } else if (id == 30) { PostMessageW(S.hwnd, WM_COMMAND, MAKEWPARAM(CMD_LAYOUT_EDIT, 0), 0); return 1; } else if (id == 71) { choose_video_player(); return 0; }
     else if (id == 120) { backup_settings(0); return 0; } else if (id == 121) { backup_settings(1); return 0; } else if (id == 122) { show_about(); return 0; } else if (id == 999) return 1;
+    if (id == 31) { lay_commit(); } if (id == 32) { static const WCHAR *an[8] = { L"Computer", L"Programs", L"Apps", L"My PC", L"Applications", L"Wine apps", L"Winlator", L"Launcher" }; scpy(C.apps_title, 32, an[ST.apps_name]); g_nav_dirty = 1; set_title(); }
     settings_commit(); return 0;
 }
 static void show_settings(void) {
-    ST.view = !wcscmp(C.view, L"icons") ? 1 : !wcscmp(C.view, L"tiles") ? 2 : 0; ST.sortk = !wcscmp(C.sort, L"date") ? 1 : !wcscmp(C.sort, L"type") ? 2 : !wcscmp(C.sort, L"size") ? 3 : 0; ST.dirs = !wcscmp(C.sort_dirs, L"last") ? 1 : !wcscmp(C.sort_dirs, L"mixed") ? 2 : 0; ST.scale = (int)(C.scale * 100 + 0.5); ST.login = run_at_login_enabled();
+    ST.view = !wcscmp(C.view, L"icons") ? 1 : !wcscmp(C.view, L"tiles") ? 2 : 0; ST.sortk = !wcscmp(C.sort, L"date") ? 1 : !wcscmp(C.sort, L"type") ? 2 : !wcscmp(C.sort, L"size") ? 3 : 0; ST.dirs = !wcscmp(C.sort_dirs, L"last") ? 1 : !wcscmp(C.sort_dirs, L"mixed") ? 2 : 0; ST.scale = (int)(C.scale * 100 + 0.5); ST.login = run_at_login_enabled(); ST.apps_name = 0; { static const WCHAR *an[8] = { L"Computer", L"Programs", L"Apps", L"My PC", L"Applications", L"Wine apps", L"Winlator", L"Launcher" }; for (int i = 0; i < 8; i++) if (wieq(C.apps_title, an[i])) ST.apps_name = i; }
     Dlg d; memset(&d, 0, sizeof d); scpy(d.title, 96, L"Settings"); d.w = px(780); d.h = px(620); d.build = settings_build; d.act = settings_act; d.ntab = 8; static const WCHAR *tn[8] = { L"General", L"Appearance", L"View & Files", L"Preview", L"Search", L"Autostart", L"Icons", L"Backup / About" };
     for (int i = 0; i < 8; i++) scpy(d.tabs[i], 40, tn[i]); dlg_foot(&d, 999, L"Close", 1); dlg_run(&d); settings_commit();
+}
+
+/* ========================================================================== */
+/* LAYOUT EDITOR: move / resize / hide / recolour elements, add launcher       */
+/* buttons, save and load your own layout themes                               */
+/* ========================================================================== */
+static void place_edits(void);
+static void hide_addr(void);
+static int fm_msgbox(const WCHAR *text, const WCHAR *title, UINT flags);
+typedef struct { WCHAR id[12]; int dx, dy, dw, dh, hide; u32 col; WCHAR label[24], path[MAX_PATH]; } LOv;
+static LOv g_ov[24]; static int g_nov, g_ed, g_ed_sel = -1, g_ed_op, g_ed_x, g_ed_y, g_ed_b[4]; static RECT g_lrect[8]; static int g_nlr;
+typedef struct { const WCHAR *id, *label; int off, kind; } LEl;
+#define LO(n) ((int)offsetof(Lay, n))
+static const LEl LEL[] = { { L"back", L"Back", LO(back), 0 }, { L"fwd", L"Forward", LO(fwd), 0 }, { L"up", L"Up", LO(up), 0 }, { L"refresh", L"Refresh", LO(refresh), 0 }, { L"menu", L"Menu", LO(menu), 0 }, { L"setb", L"Settings", LO(setb), 0 },
+    { L"cmdb", L"CMD", LO(cmdb), 0 }, { L"osb", L"OS theme", LO(osb), 0 }, { L"addr", L"Address bar", LO(addr), 0 }, { L"search", L"Search box", LO(search), 0 },
+    { L"navbar", L"Toolbar", LO(navbar), 2 }, { L"strip", L"Command strip", LO(strip), 2 }, { L"status", L"Status bar", LO(status), 2 }, { L"nav", L"Navigation pane", LO(nav), 3 }, { L"preview", L"Preview panel", LO(preview), 5 }, { L"tabs", L"Tab bar", LO(tabs), 5 }, { L"ribtabs", L"Menu tabs", LO(ribtabs), 5 } };
+#define NLEL ((int)(sizeof LEL / sizeof LEL[0]))
+static LOv *lay_find(const WCHAR *id, int create) {
+    for (int i = 0; i < g_nov; i++) if (!wcscmp(g_ov[i].id, id)) return &g_ov[i];
+    if (!create || g_nov >= 24) return NULL; LOv *o = &g_ov[g_nov++]; memset(o, 0, sizeof *o); scpy(o->id, 12, id); return o;
+}
+static int lay_dh(const WCHAR *id) { LOv *o = lay_find(id, 0); return o ? px(o->dh) : 0; }
+static int lay_dw(const WCHAR *id) { LOv *o = lay_find(id, 0); return o ? px(o->dw) : 0; }
+static COLORREF lay_col(const WCHAR *id, COLORREF def) { LOv *o = lay_find(id, 0); return (o && (o->col & 0x01000000)) ? (COLORREF)(o->col & 0xFFFFFF) : def; }
+static int lay_hidden(const WCHAR *id) { LOv *o = lay_find(id, 0); return o && o->hide && !g_ed; }
+static void lay_apply(Lay *L, int W, int H) {
+    (void)H; int bh = px(cur_style()->tb_btn);
+    for (int i = 0; i < NLEL; i++) { if (LEL[i].kind != 0) continue; LOv *o = lay_find(LEL[i].id, 0); if (!o) continue; RECT *r = (RECT *)((char *)L + LEL[i].off);
+        r->left += px(o->dx); r->right += px(o->dx + o->dw); r->top += px(o->dy); r->bottom += px(o->dy + o->dh); if (r->right < r->left + px(16)) r->right = r->left + px(16); if (r->bottom < r->top + px(12)) r->bottom = r->top + px(12); if (o->hide && !g_ed) memset(r, 0, sizeof *r); }
+    { int fh = L->search.bottom - L->search.top; L->sdrop = (RECT){ L->search.right - fh * 7 / 10 - px(2), L->search.top, L->search.right - px(2), L->search.bottom }; int subw = tw_(L"Sub", S.font_small) + px(26); L->sub = (RECT){ L->sdrop.left - subw, L->search.top, L->sdrop.left, L->search.bottom };
+      if (lay_hidden(L"search")) { memset(&L->sdrop, 0, sizeof L->sdrop); memset(&L->sub, 0, sizeof L->sub); } }
+    g_nlr = 0; for (int i = 0; i < g_nov && g_nlr < 8; i++) { LOv *o = &g_ov[i]; if (o->id[0] != 'L' || o->id[1] < '0' || o->id[1] > '9') continue; int k = o->id[1] - '0'; if (k > 7) continue;
+        RECT r = { W - px(40) - (k + 1) * px(36), L->ribtabs.top + 2, W - px(40) - (k + 1) * px(36) + bh, L->ribtabs.top + 2 + bh }; r.left += px(o->dx); r.right += px(o->dx + o->dw); r.top += px(o->dy); r.bottom += px(o->dy + o->dh); if (r.right < r.left + px(20)) r.right = r.left + px(20);
+        if (o->hide && !g_ed) memset(&r, 0, sizeof r); g_lrect[k] = r; if (k + 1 > g_nlr) g_nlr = k + 1; }
+}
+static void lay_ser(WCHAR *b, int cap) {
+    b[0] = 0; WCHAR e[MAX_PATH + 160]; wfmt(e, 160, L"flags?%d?0?0?0?0?0??", C.nav_right); scat(b, cap, e);
+    for (int i = 0; i < g_nov; i++) { LOv *o = &g_ov[i]; wfmt(e, MAX_PATH + 160, L"*%ls?%d?%d?%d?%d?%d?%u?%ls?%ls", o->id, o->dx, o->dy, o->dw, o->dh, o->hide, o->col, o->label, o->path); scat(b, cap, e); }
+}
+static void lay_parse(const WCHAR *s) {
+    g_nov = 0; C.nav_right = 0; WCHAR *cp = wdup(s), *rec = cp; while (rec && *rec) { WCHAR *nx = wcschr(rec, '*'); if (nx) *nx++ = 0; WCHAR *f[9] = { 0 }; int n = 0; WCHAR *q = rec; while (n < 9) { f[n++] = q; q = wcschr(q, '?'); if (!q) break; *q++ = 0; }
+        if (n >= 7 && f[0][0]) { if (!wcscmp(f[0], L"flags")) C.nav_right = _wtoi(f[1]); else if (g_nov < 24) { LOv *o = &g_ov[g_nov++]; memset(o, 0, sizeof *o); scpy(o->id, 12, f[0]); o->dx = _wtoi(f[1]); o->dy = _wtoi(f[2]); o->dw = _wtoi(f[3]); o->dh = _wtoi(f[4]); o->hide = _wtoi(f[5]); o->col = (u32)wcstoul(f[6], NULL, 10); if (n > 7) scpy(o->label, 24, f[7]); if (n > 8) scpy(o->path, MAX_PATH, f[8]); } }
+        rec = nx; } free(cp);
+}
+static void lay_commit(void) { WCHAR *b = (WCHAR *)malloc(24 * (MAX_PATH + 160) * sizeof(WCHAR)); lay_ser(b, 24 * (MAX_PATH + 160)); sl_clear(&C.layout_cur); sl_add(&C.layout_cur, b); free(b); cfg_save(); g_nav_dirty = 1; place_edits(); redraw(); }
+static void lay_load_cur(void) { if (C.layout_cur.n) lay_parse(C.layout_cur.v[0]); }
+static void lay_save_named(const WCHAR *name) {
+    WCHAR *b = (WCHAR *)malloc(24 * (MAX_PATH + 160) * sizeof(WCHAR)); lay_ser(b, 24 * (MAX_PATH + 160)); WCHAR clean[40]; scpy(clean, 40, name); for (WCHAR *c = clean; *c; c++) if (*c == '|') *c = ' ';
+    WCHAR *e = (WCHAR *)malloc((lstrlenW(b) + 60) * sizeof(WCHAR)); wsprintfW(e, L"%ls|%ls", clean, b); int cl = lstrlenW(clean);
+    for (int i = 0; i < C.layouts.n; i++) { const WCHAR *bar = wcschr(C.layouts.v[i], '|'); if (bar && (int)(bar - C.layouts.v[i]) == cl && !_wcsnicmp(C.layouts.v[i], clean, cl)) { sl_del(&C.layouts, i); break; } }
+    sl_add(&C.layouts, e); scpy(C.layout_name, 32, clean); free(e); free(b); lay_commit(); toast(L"Layout theme saved");
+}
+static void lay_set_ed(int on) {
+    g_ed = on; g_ed_sel = -1; g_ed_op = 0; if (S.e_search) ShowWindow(S.e_search, on ? SW_HIDE : SW_SHOW); if (S.addr_edit) hide_addr(); place_edits(); if (!on) lay_commit(); redraw();
+    if (on) toast(L"Layout editor: drag elements, right-click for options");
+}
+static void lay_reset(void) { g_nov = 0; C.nav_right = 0; C.layout_name[0] = 0; lay_commit(); }
+static int lay_el_at(int x, int y, int *kind) {   /* topmost element index: launchers (1000+k), widgets, bands */
+    for (int k = g_nlr - 1; k >= 0; k--) { WCHAR id[4]; wfmt(id, 4, L"L%d", k); if (lay_find(id, 0) && in_rect(&g_lrect[k], x, y)) { *kind = 0; return 1000 + k; } }
+    for (int i = 0; i < NLEL; i++) if (LEL[i].kind == 0) { RECT *r = (RECT *)((char *)&LY + LEL[i].off); if (in_rect(r, x, y)) { *kind = 0; return i; } }
+    for (int i = 0; i < NLEL; i++) if (LEL[i].kind != 0) { RECT *r = (RECT *)((char *)&LY + LEL[i].off); if (r->right > r->left && in_rect(r, x, y)) { *kind = LEL[i].kind; return i; } } return -1;
+}
+static RECT *lay_el_rect(int idx) { return idx >= 1000 ? &g_lrect[idx - 1000] : (RECT *)((char *)&LY + LEL[idx].off); }
+static void lay_el_id(int idx, WCHAR *id) { if (idx >= 1000) wfmt(id, 12, L"L%d", idx - 1000); else scpy(id, 12, LEL[idx].id); }
+static const WCHAR *lay_el_label(int idx) { if (idx >= 1000) { WCHAR id[12]; lay_el_id(idx, id); LOv *o = lay_find(id, 0); return o && o->label[0] ? o->label : L"Button"; } return LEL[idx].label; }
+static RECT lay_handle(int idx) {
+    RECT *r = lay_el_rect(idx); int hs = px(12), k = idx >= 1000 ? 0 : LEL[idx].kind;
+    if (k == 0) return (RECT){ r->right - hs, r->bottom - hs, r->right + 2, r->bottom + 2 }; if (k == 2) return (RECT){ (r->left + r->right) / 2 - px(24), r->bottom - hs, (r->left + r->right) / 2 + px(24), r->bottom }; if (k == 3) { int nr = C.nav_right; return (RECT){ nr ? r->left : r->right - hs, (r->top + r->bottom) / 2 - px(24), nr ? r->left + hs : r->right, (r->top + r->bottom) / 2 + px(24) }; } return (RECT){ 0, 0, 0, 0 };
+}
+static void lay_paint_widgets(HDC dc) {
+    for (int i = 0; i < NLEL; i++) { if (LEL[i].kind != 0 || i >= 8) continue; LOv *o = lay_find(LEL[i].id, 0); if (!o || !(o->col & 0x01000000)) continue; RECT *r = (RECT *)((char *)&LY + LEL[i].off); if (r->right > r->left) { COLORREF c = o->col & 0xFFFFFF; rrect(dc, r, c, c, 6, 0); } }
+}
+static void lay_draw_launchers(HDC dc) {
+    const Pal *p = &S.pal; for (int k = 0; k < g_nlr; k++) { WCHAR id[4]; wfmt(id, 4, L"L%d", k); LOv *o = lay_find(id, 0); if (!o || g_lrect[k].right <= g_lrect[k].left) continue; RECT r = g_lrect[k]; int hot = in_rect(&r, g_mx, g_my);
+        COLORREF bg = (o->col & 0x01000000) ? (COLORREF)(o->col & 0xFFFFFF) : (hot ? p->hover : p->btn); rrect(dc, &r, bg, p->btn_border, 6, 1); SelectObject(dc, S.font_small); textr(dc, o->label[0] ? o->label : L"?", &r, TC | DT_END_ELLIPSIS, contrast(bg)); SelectObject(dc, S.font); }
+}
+static void lay_overlay(HDC dc, int W, int H) {
+    if (!g_ed) return; const Pal *p = &S.pal; SelectObject(dc, S.font_small);
+    for (int pass = 0; pass < 2; pass++) for (int i = 0; i < NLEL + 8; i++) { int idx = i < NLEL ? i : 1000 + (i - NLEL); if (idx >= 1000 && (idx - 1000 >= g_nlr || g_lrect[idx - 1000].right <= g_lrect[idx - 1000].left)) continue; if ((idx == g_ed_sel) != (pass == 1)) continue;
+        RECT r = *lay_el_rect(idx); if (r.right <= r.left) continue; WCHAR id[12]; lay_el_id(idx, id); LOv *o = lay_find(id, 0); int hid = o && o->hide; COLORREF c = idx == g_ed_sel ? p->accent : (hid ? p->dim : mixc(p->accent, p->text, 0.35));
+        HPEN pn = CreatePen(idx == g_ed_sel ? PS_SOLID : PS_DOT, idx == g_ed_sel ? 2 : 1, c); HGDIOBJ op = SelectObject(dc, pn), ob = SelectObject(dc, GetStockObject(NULL_BRUSH)); Rectangle(dc, r.left, r.top, r.right, r.bottom); SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(pn);
+        if (hid) { fill_alpha(dc, &r, p->bg, 150); } WCHAR t[60]; wfmt(t, 60, hid ? L"%ls (hidden)" : L"%ls", lay_el_label(idx)); int tw = text_w(dc, t) + px(8); if (r.right - r.left >= tw && r.bottom - r.top >= px(16) && (idx == g_ed_sel || r.bottom - r.top > px(34))) { RECT tr = { r.left + 1, r.top + 1, r.left + tw, r.top + px(15) }; fillr(dc, &tr, c); textr(dc, t, &tr, TC, contrast(c)); }
+        if (idx == g_ed_sel) { RECT hd = lay_handle(idx); if (hd.right > hd.left) { fillr(dc, &hd, p->accent); framer(dc, &hd, contrast(p->accent)); } } }
+    int bw = px(86), n = 8, tw = n * bw + px(16), x0 = (W - tw) / 2, y0 = LY.status.top - px(58); if (y0 < LY.navbar.bottom + px(20)) y0 = LY.navbar.bottom + px(20); RECT pn = { x0, y0, x0 + tw, y0 + px(46) }; rrect(dc, &pn, p->cap, p->accent, 8, 1);
+    static const WCHAR *lab[8] = { L"Done", L"Save as...", L"Themes", L"Add button", L"Hide/Show", L"Colour", L"Nav side", L"Reset" };
+    for (int i = 0; i < n; i++) { RECT b = { x0 + px(8) + i * bw, y0 + px(7), x0 + px(8) + (i + 1) * bw - px(4), y0 + px(39) }; int hot = in_rect(&b, g_mx, g_my); rrect(dc, &b, i == 0 ? p->accent : (hot ? p->hover : p->btn), p->btn_border, 5, 1); textr(dc, lab[i], &b, TC, i == 0 ? contrast(p->accent) : p->text); }
+    (void)H; SelectObject(dc, S.font);
+}
+static int lay_panel_hit(int x, int y, int *which) {
+    int W = LY.status.right, bw = px(86), n = 8, tw = n * bw + px(16), x0 = (W - tw) / 2, y0 = LY.status.top - px(58); if (y0 < LY.navbar.bottom + px(20)) y0 = LY.navbar.bottom + px(20); RECT pn = { x0, y0, x0 + tw, y0 + px(46) };
+    if (!in_rect(&pn, x, y)) return 0; *which = -1; for (int i = 0; i < n; i++) { RECT b = { x0 + px(8) + i * bw, y0 + px(7), x0 + px(8) + (i + 1) * bw - px(4), y0 + px(39) }; if (in_rect(&b, x, y)) { *which = i; break; } } return 1;
+}
+static void lay_prompt_name(void) {
+    int W = LY.status.right; int eh = px(C.font_size) + px(8), w = px(260), x = (W - w) / 2, y = LY.status.top - px(110); S.rename_item = -2; SetWindowTextW(S.e_rename, C.layout_name[0] ? C.layout_name : L"My layout"); MoveWindow(S.e_rename, x, y, w, eh, TRUE); ShowWindow(S.e_rename, SW_SHOW); SetFocus(S.e_rename); SendMessageW(S.e_rename, EM_SETSEL, 0, -1); toast(L"Type a name for this layout theme, press Enter");
+}
+static void lay_add_button(int folder) {
+    int slot = -1; for (int k = 0; k < 8; k++) { WCHAR id[4]; wfmt(id, 4, L"L%d", k); if (!lay_find(id, 0)) { slot = k; break; } } if (slot < 0) { toast(L"Up to 8 extra buttons"); return; }
+    WCHAR f[MAX_PATH] = L""; if (folder) { BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = S.hwnd; bi.lpszTitle = L"Choose a folder for the new button"; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE; LPITEMIDLIST pl = SHBrowseForFolderW(&bi); if (!pl) return; BOOL ok = SHGetPathFromIDListW(pl, f); CoTaskMemFree(pl); if (!ok) return; }
+    else { OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Programs and files\0*.exe;*.bat;*.cmd;*.lnk\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (!GetOpenFileNameW(&o)) return; }
+    WCHAR id[4]; wfmt(id, 4, L"L%d", slot); LOv *o = lay_find(id, 1); if (!o) return; scpy(o->path, MAX_PATH, f); WCHAR lb[40]; scpy(lb, 40, base_name(f)); WCHAR *e = PathFindExtensionW(lb); if (*e && !folder) *e = 0; for (WCHAR *c = lb; *c; c++) if (*c == '?' || *c == '*') *c = ' '; scpy(o->label, 24, lb); lay_commit(); g_ed_sel = 1000 + slot;
+}
+static void lay_menu_for(int idx, int x, int y) {
+    if (idx < 0) return; g_ed_sel = idx; redraw(); WCHAR id[12]; lay_el_id(idx, id); LOv *o = lay_find(id, 0); PMenu *m = pm_new(); pm_head(m, lay_el_label(idx));
+    pm_add(m, 1, o && o->hide ? L"Show this element" : L"Hide this element", 0, 1); PMenu *c = pm_sub(m, L"Colour"); for (int k = 0; k < 12; k++) pm_swatch(c, 10 + k, FOLDER_PAL_NAMES[k], RGB((FOLDER_PALETTE[k] >> 16) & 255, (FOLDER_PALETTE[k] >> 8) & 255, FOLDER_PALETTE[k] & 255), 0); pm_sep(c); pm_add(c, 30, L"Theme colour (default)", 0, 1);
+    pm_add(m, 2, L"Reset position and size", 0, 1); if (idx >= 1000) pm_add(m, 3, L"Delete this button", 0, 1);
+    POINT pt = { x, y }; ClientToScreen(S.hwnd, &pt); int r = pm_track(m, pt.x, pt.y); pm_free(m); if (!r) return; o = lay_find(id, 1); if (!o) return;
+    if (r == 1) o->hide = !o->hide; else if (r == 2) { o->dx = o->dy = o->dw = o->dh = 0; } else if (r == 3) { int k = (int)(o - g_ov); for (int i = k; i < g_nov - 1; i++) g_ov[i] = g_ov[i + 1]; g_nov--; g_ed_sel = -1; } else if (r >= 10 && r < 22) { u32 c2 = FOLDER_PALETTE[r - 10]; o->col = 0x01000000 | RGB((c2 >> 16) & 255, (c2 >> 8) & 255, c2 & 255); } else if (r == 30) o->col = 0;
+    lay_commit();
+}
+static void lay_context(int x, int y) { int kind; lay_menu_for(lay_el_at(x, y, &kind), x, y); }
+static void lay_themes_menu(int x, int y) {
+    PMenu *m = pm_new(); if (!C.layouts.n) pm_head(m, L"No saved layout themes yet"); for (int i = 0; i < C.layouts.n && i < 40; i++) { const WCHAR *bar = wcschr(C.layouts.v[i], '|'); WCHAR nm[48]; int l = bar ? (int)(bar - C.layouts.v[i]) : 0; if (l > 46) l = 46; memcpy(nm, C.layouts.v[i], l * sizeof(WCHAR)); nm[l] = 0; pm_add(m, CMD_LAYOUT_LOAD0 + i, nm, wieq(nm, C.layout_name), 1); }
+    if (C.layouts.n) { pm_sep(m); PMenu *d = pm_sub(m, L"Delete theme"); for (int i = 0; i < C.layouts.n && i < 40; i++) { const WCHAR *bar = wcschr(C.layouts.v[i], '|'); WCHAR nm[48]; int l = bar ? (int)(bar - C.layouts.v[i]) : 0; if (l > 46) l = 46; memcpy(nm, C.layouts.v[i], l * sizeof(WCHAR)); nm[l] = 0; pm_add(d, CMD_LAYOUT_DEL0 + i, nm, 0, 1); } }
+    POINT pt = { x, y }; ClientToScreen(S.hwnd, &pt); int r = pm_track(m, pt.x, pt.y); pm_free(m);
+    if (r >= CMD_LAYOUT_LOAD0 && r < CMD_LAYOUT_LOAD0 + 40) { int i = r - CMD_LAYOUT_LOAD0; if (i < C.layouts.n) { const WCHAR *bar = wcschr(C.layouts.v[i], '|'); if (bar) { lay_parse(bar + 1); WCHAR nm[40]; int l = (int)(bar - C.layouts.v[i]); if (l > 38) l = 38; memcpy(nm, C.layouts.v[i], l * sizeof(WCHAR)); nm[l] = 0; scpy(C.layout_name, 32, nm); lay_commit(); } } }
+    else if (r >= CMD_LAYOUT_DEL0 && r < CMD_LAYOUT_DEL0 + 40) { int i = r - CMD_LAYOUT_DEL0; if (i < C.layouts.n) { sl_del(&C.layouts, i); cfg_save(); } }
+}
+static void lay_down(int x, int y) {
+    int w; if (lay_panel_hit(x, y, &w)) { if (w == 0) lay_set_ed(0); else if (w == 1) lay_prompt_name(); else if (w == 2) lay_themes_menu(x, y - px(10));
+        else if (w == 3) { PMenu *m = pm_new(); pm_add(m, 1, L"Program or file...", 0, 1); pm_add(m, 2, L"Folder...", 0, 1); POINT pt = { x, y }; ClientToScreen(S.hwnd, &pt); int r = pm_track(m, pt.x, pt.y - px(50)); pm_free(m); if (r == 1) lay_add_button(0); else if (r == 2) lay_add_button(1); }
+        else if (w == 4 && g_ed_sel >= 0) { WCHAR id[12]; lay_el_id(g_ed_sel, id); LOv *o = lay_find(id, 1); if (o) { o->hide = !o->hide; lay_commit(); } } else if (w == 4) toast(L"Click an element first");
+        else if (w == 5 && g_ed_sel >= 0) lay_menu_for(g_ed_sel, x, y - px(10)); else if (w == 5) toast(L"Click an element first");
+        else if (w == 6) { C.nav_right = !C.nav_right; lay_commit(); } else if (w == 7) { if (fm_msgbox(L"Reset the whole layout to the look's default?", L"Layout editor", MB_YESNO | MB_ICONQUESTION) == IDYES) lay_reset(); } return; }
+    if (g_ed_sel >= 0) { RECT hd = lay_handle(g_ed_sel); if (hd.right > hd.left && in_rect(&hd, x, y)) { WCHAR id[12]; lay_el_id(g_ed_sel, id); LOv *o = lay_find(id, 1); if (o) { g_ed_op = 2; g_ed_x = x; g_ed_y = y; g_ed_b[0] = o->dx; g_ed_b[1] = o->dy; g_ed_b[2] = o->dw; g_ed_b[3] = o->dh; return; } } }
+    int kind; int idx = lay_el_at(x, y, &kind); g_ed_sel = idx; if (idx >= 0 && (idx >= 1000 || LEL[idx].kind == 0)) { WCHAR id[12]; lay_el_id(idx, id); LOv *o = lay_find(id, 1); if (o) { g_ed_op = 1; g_ed_x = x; g_ed_y = y; g_ed_b[0] = o->dx; g_ed_b[1] = o->dy; g_ed_b[2] = o->dw; g_ed_b[3] = o->dh; } } redraw();
+}
+static void lay_move(int x, int y) {
+    if (!g_ed_op || g_ed_sel < 0) return; WCHAR id[12]; lay_el_id(g_ed_sel, id); LOv *o = lay_find(id, 1); if (!o) return; int ddx = (int)((x - g_ed_x) / C.scale), ddy = (int)((y - g_ed_y) / C.scale); int k = g_ed_sel >= 1000 ? 0 : LEL[g_ed_sel].kind;
+    if (g_ed_op == 1) { o->dx = g_ed_b[0] + ddx; o->dy = g_ed_b[1] + ddy; }
+    else { if (k == 0) { o->dw = g_ed_b[2] + ddx; o->dh = g_ed_b[3] + ddy; if (o->dw < -60) o->dw = -60; } else if (k == 2) { o->dh = g_ed_b[3] + ddy; if (o->dh < -40) o->dh = -40; if (o->dh > 160) o->dh = 160; } else if (k == 3) { o->dw = g_ed_b[2] + (C.nav_right ? -ddx : ddx); if (o->dw < -80) o->dw = -80; if (o->dw > 400) o->dw = 400; } }
+    place_edits(); redraw();
+}
+static void lay_up(void) { if (g_ed_op) { g_ed_op = 0; lay_commit(); } }
+
+/* ========================================================================== */
+/* COMPUTER (apps) TAB, FULL BACKUP/RESTORE, DESKTOP SHORTCUTS, CRASH GUARD      */
+/* ========================================================================== */
+static HANDLE g_mtx;
+static void apps_materialize(void) { Tab *t = curtab(); sl_clear(&C.apps); for (int i = 0; i < t->nv; i++) sl_add(&C.apps, t->it[t->view[i]].path); }
+static void apps_move(int how) {   /* -1 up, 1 down, 2 top, 3 bottom */
+    Tab *t = curtab(); if (wcscmp(t->path, L"::apps")) return; Item *f = focus_item(t); if (!f) { toast(L"Select a program first"); return; } int vi = t->focus; if (vi < 0) return; apps_materialize();
+    int k = sl_find(&C.apps, f->path); if (k < 0) return; int to = how == 2 ? 0 : how == 3 ? C.apps.n - 1 : k + how; if (to < 0 || to >= C.apps.n || to == k) return;
+    WCHAR *tmp = C.apps.v[k]; if (to < k) for (int i = k; i > to; i--) C.apps.v[i] = C.apps.v[i - 1]; else for (int i = k; i < to; i++) C.apps.v[i] = C.apps.v[i + 1]; C.apps.v[to] = tmp; cfg_save(); reload(1);
+}
+static void apps_add_dialog(void) {
+    WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = S.hwnd; o.lpstrFilter = L"Programs (*.exe;*.lnk;*.bat;*.cmd)\0*.exe;*.lnk;*.bat;*.cmd\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileNameW(&o)) return; int h = sl_find(&C.apps_hide, f); if (h >= 0) sl_del(&C.apps_hide, h); if (sl_find(&C.apps, f) < 0) sl_add(&C.apps, f); cfg_save(); if (!wcscmp(curtab()->path, L"::apps")) reload(1); toast(L"Application added");
+}
+static void apps_add_path(const WCHAR *p) { if (path_exists(p) && sl_find(&C.apps, p) < 0) { sl_add(&C.apps, p); int h = sl_find(&C.apps_hide, p); if (h >= 0) sl_del(&C.apps_hide, h); } }
+static void apps_reset(void) { sl_clear(&C.apps); sl_clear(&C.apps_hide); cfg_save(); reload(0); toast(L"List reset - everything found is shown again"); }
+/* ---- shortcuts ---- */
+static int lnk_target(const WCHAR *lnk, WCHAR *out) {
+    IShellLinkW *sl = NULL; IPersistFile *pf = NULL; int ok = 0; out[0] = 0; if (FAILED(CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW, (void **)&sl)) || !sl) return 0;
+    if (SUCCEEDED(sl->lpVtbl->QueryInterface(sl, &IID_IPersistFile, (void **)&pf)) && pf) { if (SUCCEEDED(pf->lpVtbl->Load(pf, lnk, 0))) { WCHAR t[MAX_PATH]; t[0] = 0; if (SUCCEEDED(sl->lpVtbl->GetPath(sl, t, MAX_PATH, NULL, 0)) && t[0]) { scpy(out, MAX_PATH, t); ok = 1; } } pf->lpVtbl->Release(pf); }
+    sl->lpVtbl->Release(sl); return ok;
+}
+static void desktop_dir(WCHAR *dd) { if (!SHGetSpecialFolderPathW(NULL, dd, 0x10, TRUE)) { WCHAR h[MAX_PATH]; home_dir(h); path_join(dd, MAX_PATH, h, L"Desktop"); CreateDirectoryW(dd, NULL); } }
+/* ---- full backup (.zip): settings + custom icons + fonts + desktop shortcuts ---- */
+static void stage_icons(const WCHAR *stage, SL *list, const WCHAR *sub, int keyed) {
+    WCHAR d[MAX_PATH]; path_join(d, MAX_PATH, stage, sub); CreateDirectoryW(d, NULL);
+    for (int i = 0; i < list->n; i++) { WCHAR *e = list->v[i]; WCHAR *bar = keyed ? wcsrchr(e, '|') : NULL; const WCHAR *file = keyed ? (bar ? bar + 1 : NULL) : e; if (!file || !path_exists(file) || file[0] == '@') continue;
+        WCHAR nm[MAX_PATH], dst[MAX_PATH], ne[MAX_PATH * 2 + 8]; wfmt(nm, MAX_PATH, L"%d_%ls", i, base_name(file)); path_join(dst, MAX_PATH, d, nm); if (!CopyFileW(file, dst, FALSE)) continue;
+        if (keyed) { int kl = (int)(bar - e); WCHAR key[MAX_PATH]; memcpy(key, e, kl * sizeof(WCHAR)); key[kl] = 0; wfmt(ne, MAX_PATH * 2 + 8, L"%ls|@%ls\\%ls", key, sub, nm); } else wfmt(ne, MAX_PATH * 2 + 8, L"@%ls\\%ls", sub, nm);
+        free(list->v[i]); list->v[i] = wdup(ne); }
+}
+static void backup_full(int restore) {
+    WCHAR f[MAX_PATH] = L"Files_backup.zip"; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Files backup (*.zip)\0*.zip\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.lpstrDefExt = L"zip";
+    WCHAR stage[MAX_PATH]; path_join(stage, MAX_PATH, CONFIG_DIR, restore ? L"restore_tmp" : L"bak_stage");
+    if (!restore) {
+        o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST; if (!GetSaveFileNameW(&o)) return; delete_tree(stage); CreateDirectoryW(stage, NULL);
+        SL ic = { 0 }, fo = { 0 }; for (int i = 0; i < C.icon_map.n; i++) sl_add(&ic, C.icon_map.v[i]); for (int i = 0; i < C.doc_fonts.n; i++) sl_add(&fo, C.doc_fonts.v[i]);
+        stage_icons(stage, &ic, L"icons", 1); stage_icons(stage, &fo, L"fonts", 0);
+        SL oi = C.icon_map, of = C.doc_fonts; C.icon_map = ic; C.doc_fonts = fo; cfg_save(); WCHAR sj[MAX_PATH]; path_join(sj, MAX_PATH, stage, L"settings.json"); CopyFileW(CONFIG_PATH, sj, FALSE); C.icon_map = oi; C.doc_fonts = of; sl_clear(&ic); free(ic.v); sl_clear(&fo); free(fo.v); cfg_save();
+        WCHAR sd[MAX_PATH]; path_join(sd, MAX_PATH, stage, L"shortcuts"); CreateDirectoryW(sd, NULL); int ns = 0;
+        for (int i = 0; i < C.shortcuts.n; i++) if (path_exists(C.shortcuts.v[i])) { WCHAR dst[MAX_PATH]; path_join(dst, MAX_PATH, sd, base_name(C.shortcuts.v[i])); if (CopyFileW(C.shortcuts.v[i], dst, FALSE)) ns++; }
+        HANDLE h = CreateFileW(f, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); int ok = 0; if (h != INVALID_HANDLE_VALUE) { CompCtx c; memset(&c, 0, sizeof c); ZW z; Sink sk = { fsink_write, h }; zw_init(&z, sk); c.z = &z; c.mode = 0;
+            WCHAR pat[MAX_PATH]; path_join(pat, MAX_PATH, stage, L"*"); WIN32_FIND_DATAW fd; HANDLE q = FindFirstFileW(pat, &fd);
+            if (q != INVALID_HANDLE_VALUE) { do { if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue; WCHAR cf[MAX_PATH]; path_join(cf, MAX_PATH, stage, fd.cFileName); char nm[600]; WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, nm, 600, NULL, NULL); comp_add(&c, cf, nm, (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0, 0); } while (FindNextFileW(q, &fd)); FindClose(q); }
+            ok = zw_finish(&z) == 0; CloseHandle(h); if (!ok) DeleteFileW(f); }
+        delete_tree(stage); WCHAR m[160]; if (ok) wfmt(m, 160, L"Backup saved (settings, %d icon/font file(s) and %d shortcut(s))", ic.n, ns); toast(ok ? L"Full backup saved (settings, icons, fonts, shortcuts)" : L"Could not write the backup"); (void)m; return;
+    }
+    o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST; if (!GetOpenFileNameW(&o)) return; delete_tree(stage); CreateDirectoryW(stage, NULL); WCHAR msg[160] = L""; do_extract(f, stage, msg);
+    WCHAR sj[MAX_PATH]; path_join(sj, MAX_PATH, stage, L"settings.json"); if (!path_exists(sj)) { fm_msgbox(L"This file is not a Files backup (settings.json is missing).", L"Restore", MB_OK | MB_ICONWARNING); delete_tree(stage); return; }
+    if (fm_msgbox(L"Restore this backup? Your current settings, icons and shortcuts will be replaced.", L"Restore backup", MB_YESNO | MB_ICONQUESTION) != IDYES) { delete_tree(stage); return; }
+    if (!CopyFileW(sj, CONFIG_PATH, FALSE)) { toast(L"Could not restore settings"); delete_tree(stage); return; } cfg_load();
+    WCHAR idir[MAX_PATH], fdir[MAX_PATH]; path_join(idir, MAX_PATH, CONFIG_DIR, L"icons"); path_join(fdir, MAX_PATH, CONFIG_DIR, L"fonts"); CreateDirectoryW(idir, NULL); CreateDirectoryW(fdir, NULL);
+    for (int pass = 0; pass < 2; pass++) { SL *l = pass ? &C.doc_fonts : &C.icon_map; const WCHAR *sub = pass ? L"fonts" : L"icons"; const WCHAR *dd = pass ? fdir : idir;
+        for (int i = 0; i < l->n; i++) { WCHAR *e = l->v[i]; WCHAR *at = wcsstr(e, pass ? L"@fonts\\" : L"|@icons\\"); if (pass) { if (e[0] != '@') continue; at = e; } else if (!at) continue; const WCHAR *rel = at + (pass ? 7 : 8); (void)sub;
+            WCHAR src[MAX_PATH], dst[MAX_PATH]; path_join(src, MAX_PATH, stage, pass ? L"fonts" : L"icons"); path_join(src, MAX_PATH, src, rel); path_join(dst, MAX_PATH, dd, rel); CopyFileW(src, dst, FALSE);
+            WCHAR ne[MAX_PATH * 2 + 8]; if (pass) scpy(ne, MAX_PATH * 2 + 8, dst); else { int kl = (int)(at - e); WCHAR key[MAX_PATH]; memcpy(key, e, kl * sizeof(WCHAR)); key[kl] = 0; wfmt(ne, MAX_PATH * 2 + 8, L"%ls|%ls", key, dst); } free(l->v[i]); l->v[i] = wdup(ne); } }
+    doc_fonts_load(); WCHAR sd[MAX_PATH], dd[MAX_PATH]; path_join(sd, MAX_PATH, stage, L"shortcuts"); desktop_dir(dd); int ns = 0; WCHAR pat[MAX_PATH]; path_join(pat, MAX_PATH, sd, L"*.lnk"); WIN32_FIND_DATAW fd; HANDLE q = FindFirstFileW(pat, &fd);
+    if (q != INVALID_HANDLE_VALUE) { do { WCHAR src[MAX_PATH], dst[MAX_PATH], tg[MAX_PATH]; path_join(src, MAX_PATH, sd, fd.cFileName); path_join(dst, MAX_PATH, dd, fd.cFileName); if (CopyFileW(src, dst, FALSE)) { ns++; if (sl_find(&C.shortcuts, dst) < 0) sl_add(&C.shortcuts, dst); if (lnk_target(dst, tg)) apps_add_path(tg); } } while (FindNextFileW(q, &fd)); FindClose(q); }
+    delete_tree(stage); cicons_flush(); cfg_save(); update_pal(); apply_fonts(); lay_load_cur(); place_edits(); g_nav_dirty = 1; reload(0); WCHAR m[120]; wfmt(m, 120, L"Backup restored (%d shortcut(s) added to the desktop and the Computer tab)", ns); toast(m);
+}
+/* ---- crash guard: log, tell the user, restart in safe mode ---- */
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
+    static volatile LONG once; if (InterlockedExchange(&once, 1)) return EXCEPTION_EXECUTE_HANDLER;
+    fm_log("CRASH code=%08lx addr=%p safe=%d", (unsigned long)ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress, g_safe);
+    if (g_viewer) { MessageBoxW(NULL, L"Files Viewer hit an unexpected problem while drawing this file and will close.\nYour files are not affected. Try \"Open in Viewer\" again, or preview the file in the main Files app.", L"Files Viewer", MB_OK | MB_ICONWARNING | MB_TOPMOST); ExitProcess(1); }
+    if (!g_safe) { MessageBoxW(NULL, L"Files hit an unexpected problem and will restart in safe mode (no thumbnails or previews).\nYour settings and files are not affected.", L"Files(Winlator/Wine)", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+        WCHAR exe[MAX_PATH], cmd[MAX_PATH + 24]; GetModuleFileNameW(NULL, exe, MAX_PATH); wfmt(cmd, MAX_PATH + 24, L"\"%ls\" --safe", exe); if (g_mtx) CloseHandle(g_mtx);
+        STARTUPINFOW si; memset(&si, 0, sizeof si); si.cb = sizeof si; PROCESS_INFORMATION pi; memset(&pi, 0, sizeof pi); if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); } }
+    ExitProcess(1); return EXCEPTION_EXECUTE_HANDLER;
+}
+static void choose_video_player(void) {
+    WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Programs\0*.exe\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (GetOpenFileNameW(&o)) { scpy(C.video_player, MAX_PATH, f); cfg_save(); toast(L"External video player set"); } else if (C.video_player[0] && fm_msgbox(L"Clear the chosen external player (auto-detect again)?", L"Video player", MB_YESNO) == IDYES) { C.video_player[0] = 0; cfg_save(); }
+}
+
+/* ---- stand-alone Viewer: FilesViewer_x86/x64.exe, or the main exe started with --viewer <file> ---- */
+static int viewer_pick(WCHAR *path) {
+    WCHAR full[MAX_PATH] = L""; if (path[0] && GetFullPathNameW(path, MAX_PATH, full, NULL) && path_exists(full) && !dir_exists(full)) { scpy(path, MAX_PATH, full); return 1; }
+    WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.lpstrFilter = L"All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR; o.lpstrTitle = L"Files Viewer - choose a file to view";
+    if (!GetOpenFileNameW(&o)) return 0; scpy(path, MAX_PATH, f); return 1;
+}
+static void viewer_start(void) {
+    C.show_preview = 1; preview_update();
+    if (g_pv.kind == PK_ERROR && g_pv.big && MessageBoxW(NULL, L"This file is very large. Opening it can be slow and use a lot of memory.\nLoad it anyway?", L"Files Viewer", MB_YESNO | MB_ICONQUESTION) == IDYES) { g_force_big = 1; preview_update(); g_force_big = 0; }
+    if (g_pv.kind >= PK_TEXT && g_pv.kind <= PK_ARCHIVE) { pv_open_full(); if (g_fullwnd) return; }
+    WCHAR m[1400]; if (g_pv.kind == PK_ERROR) wfmt(m, 1400, L"%ls\n\n%ls", base_name(g_vfile), g_pv.err);
+    else { wfmt(m, 1400, L"%ls\n\nThere is no graphic preview for this kind of file. Details:\n", base_name(g_vfile)); for (int i = 0; i < g_pinfo.n; i++) { WCHAR l[300]; wfmt(l, 300, L"\n%ls: %ls", g_pinfo.k[i], g_pinfo.v[i]); if (lstrlenW(m) + lstrlenW(l) < 1390) lstrcatW(m, l); } }
+    MessageBoxW(NULL, m, L"Files Viewer", MB_OK | MB_ICONINFORMATION); DestroyWindow(S.hwnd);
+}
+static void open_in_viewer(const WCHAR *file) {
+    WCHAR exe[MAX_PATH], dir[MAX_PATH], v[MAX_PATH], cmd[2 * MAX_PATH + 40]; GetModuleFileNameW(NULL, exe, MAX_PATH); parent_of(exe, dir);
+#ifdef _WIN64
+    static const WCHAR *names[] = { L"FilesViewer_x64.exe", L"FilesViewer.exe", L"FilesViewer_x86.exe", NULL };
+#else
+    static const WCHAR *names[] = { L"FilesViewer_x86.exe", L"FilesViewer.exe", NULL };
+#endif
+    int sep = 0; for (int i = 0; names[i] && !sep; i++) { path_join(v, MAX_PATH, dir, names[i]); if (path_exists(v)) sep = 1; }
+    if (sep) wfmt(cmd, 2 * MAX_PATH + 40, L"\"%ls\" \"%ls\"", v, file); else wfmt(cmd, 2 * MAX_PATH + 40, L"\"%ls\" --viewer \"%ls\"", exe, file);
+    STARTUPINFOW si; memset(&si, 0, sizeof si); si.cb = sizeof si; PROCESS_INFORMATION pi; memset(&pi, 0, sizeof pi);
+    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); } else toast(L"Could not start the Viewer");
+}
+
+/* ========================================================================== */
+/* GAMES TAB: back up game saves to a .zip and restore them to a save folder    */
+/* A game entry in C.games is  "Name|save path 1|save path 2|..."  (max 16)     */
+/* ========================================================================== */
+typedef struct { WCHAR *buf, *name, *p[16]; int np; } GameE;
+static void game_parse(const WCHAR *e, GameE *g) {
+    memset(g, 0, sizeof *g); g->buf = wdup(e); g->name = g->buf; WCHAR *s = g->buf, *b = wcschr(s, '|'); if (!b) return; *b = 0; s = b + 1;
+    while (*s) { if (g->np < 16) g->p[g->np++] = s; b = wcschr(s, '|'); if (!b) break; *b = 0; s = b + 1; }
+}
+static void game_free(GameE *g) { free(g->buf); memset(g, 0, sizeof *g); }
+static WCHAR *game_join(const WCHAR *name, WCHAR *const *p, int np) {
+    size_t n = lstrlenW(name) + 4; for (int i = 0; i < np; i++) n += lstrlenW(p[i]) + 2; WCHAR *o = (WCHAR *)malloc(n * sizeof(WCHAR)); lstrcpyW(o, name);
+    for (int i = 0; i < np; i++) { lstrcatW(o, L"|"); lstrcatW(o, p[i]); } return o;
+}
+static void game_set(int idx, const WCHAR *name, WCHAR *const *p, int np) { WCHAR *s = game_join(name, p, np); if (idx >= 0 && idx < C.games.n) { free(C.games.v[idx]); C.games.v[idx] = s; } else { sl_add(&C.games, s); free(s); } }
+static int game_find(const WCHAR *name) { for (int k = 0; k < C.games.n; k++) { GameE g; game_parse(C.games.v[k], &g); int same = !lstrcmpiW(g.name, name); game_free(&g); if (same) return k; } return -1; }
+static void game_clean_name(WCHAR *n) { for (WCHAR *c = n; *c; c++) if (wcschr(L"\\/:*?\"<>|", *c)) *c = '_'; int l = lstrlenW(n); while (l && (n[l - 1] == ' ' || n[l - 1] == '.')) n[--l] = 0; }
+
+static void read_games(Tab *t) {
+    for (int k = 0; k < C.games.n; k++) {
+        GameE g; game_parse(C.games.v[k], &g);
+        if (g.np) {
+            WIN32_FILE_ATTRIBUTE_DATA d; int ok = GetFileAttributesExW(g.p[0], GetFileExInfoStandard, &d) != 0; Item *i = tab_add(t);
+            scpy(i->name, 256, g.name); scpy(i->path, MAX_PATH, g.p[0]); i->ord = k; i->dir = ok && (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (ok) { i->mt = d.ftLastWriteTime; i->size = i->dir ? 0 : (((u64)d.nFileSizeHigh << 32) | d.nFileSizeLow); }
+            wfmt(i->type, 64, L"Game saves - %d location%ls%ls", g.np, g.np > 1 ? L"s" : L"", ok ? L"" : L" (missing)");
+        }
+        game_free(&g);
+    }
+}
+static int game_pick_sel(int *idx, int max) {   /* selected games of the Games tab (or the focused one) */
+    Tab *t = curtab(); int n = 0; if (wcscmp(t->path, L"::games")) return 0;
+    for (int i = 0; i < t->n && n < max; i++) if (t->it[i].sel) idx[n++] = t->it[i].ord;
+    if (!n) { Item *f = focus_item(t); if (f) idx[n++] = f->ord; } return n;
+}
+static int game_folder_dialog(const WCHAR *title, WCHAR *out) {
+    BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; bi.lpszTitle = title; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    LPITEMIDLIST pl = SHBrowseForFolderW(&bi); if (!pl) return 0; BOOL ok = SHGetPathFromIDListW(pl, out); CoTaskMemFree(pl); return ok && out[0];
+}
+static int game_has(WCHAR *const *p, int np, const WCHAR *x) { for (int i = 0; i < np; i++) if (!lstrcmpiW(p[i], x)) return 1; return 0; }
+
+/* Add a game (idx < 0) or add another save location to game idx. Asks for a folder or for files. */
+static void game_add(int idx) {
+    int r = fm_msgbox(L"What should be backed up?\n\nYes = a save folder\nNo = one or more save files\nCancel = stop", idx >= 0 ? L"Add save location" : L"Add game", MB_YESNOCANCEL | MB_ICONQUESTION); if (r == IDCANCEL) return;
+    WCHAR *np_[16]; int nn = 0; WCHAR dflt[128] = L"Game";
+    if (r == IDYES) { WCHAR f[MAX_PATH]; if (!game_folder_dialog(L"Choose the game's save folder", f)) return; np_[nn++] = wdup(f); const WCHAR *b = base_name(f); if (*b) scpy(dflt, 128, b); }
+    else {
+        WCHAR *buf = (WCHAR *)calloc(32768, sizeof(WCHAR)); OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"All files\0*.*\0"; o.lpstrFile = buf; o.nMaxFile = 32768;
+        o.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR; o.lpstrTitle = L"Choose the game's save file(s)";
+        if (!GetOpenFileNameW(&o)) { free(buf); return; }
+        WCHAR *first = buf; size_t l1 = lstrlenW(first);
+        if (first[l1 + 1] == 0) { np_[nn++] = wdup(first); WCHAR par[MAX_PATH]; parent_of(first, par); const WCHAR *b = base_name(par); if (*b) scpy(dflt, 128, b); }
+        else { WCHAR *nm = first + l1 + 1; const WCHAR *b = base_name(first); if (*b) scpy(dflt, 128, b); while (*nm && nn < 16) { WCHAR full[MAX_PATH]; path_join(full, MAX_PATH, first, nm); np_[nn++] = wdup(full); nm += lstrlenW(nm) + 1; } }
+        free(buf);
+    }
+    if (idx >= 0 && idx < C.games.n) {
+        GameE g; game_parse(C.games.v[idx], &g); WCHAR *all[16]; int na = 0; for (int i = 0; i < g.np; i++) all[na++] = g.p[i];
+        for (int i = 0; i < nn && na < 16; i++) if (!game_has(all, na, np_[i])) all[na++] = np_[i];
+        WCHAR nm[128]; scpy(nm, 128, g.name); game_set(idx, nm, all, na); game_free(&g);
+    } else {
+        WCHAR nm[128]; scpy(nm, 128, dflt); game_clean_name(nm); if (!nm[0]) scpy(nm, 128, L"Game"); WCHAR base[128]; scpy(base, 128, nm); for (int k = 2; game_find(nm) >= 0 && k < 200; k++) wfmt(nm, 128, L"%ls (%d)", base, k);
+        game_set(-1, nm, np_, nn);
+    }
+    for (int i = 0; i < nn; i++) free(np_[i]);
+    cfg_save(); if (!wcscmp(curtab()->path, L"::games")) reload(0); toast(idx >= 0 ? L"Save location added" : L"Game added - select it and choose Backup");
+}
+static void game_rename(int idx, const WCHAR *nn) {
+    if (idx < 0 || idx >= C.games.n) return; WCHAR nm[128]; scpy(nm, 128, nn); game_clean_name(nm); if (!nm[0]) return; int o = game_find(nm); if (o >= 0 && o != idx) { toast(L"A game with that name already exists"); return; }
+    GameE g; game_parse(C.games.v[idx], &g); game_set(idx, nm, g.p, g.np); game_free(&g); cfg_save(); reload(0);
+}
+static void game_remove(void) {
+    int idx[256]; int n = game_pick_sel(idx, 256); if (!n) { toast(L"Select a game first"); return; }
+    if (C.confirm_ops) { WCHAR m[200]; wfmt(m, 200, n == 1 ? L"Remove this game from the list?\nSave files and backups are not deleted." : L"Remove %d games from the list?\nSave files and backups are not deleted.", n); if (fm_msgbox(m, L"Remove game", MB_YESNO | MB_ICONQUESTION) != IDYES) return; }
+    for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (idx[j] > idx[i]) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+    for (int i = 0; i < n; i++) if (idx[i] >= 0 && idx[i] < C.games.n) sl_del(&C.games, idx[i]);
+    cfg_save(); reload(0); toast(L"Removed from the list");
+}
+
+/* ---- backup ---- */
+static int game_zip(const GameE *g, const WCHAR *out) {
+    WCHAR mf[MAX_PATH]; path_join(mf, MAX_PATH, CONFIG_DIR, L"_gamesave.txt"); int any = 0;
+    WCHAR *tx = (WCHAR *)malloc((600 + 16 * (2 * MAX_PATH + 40)) * sizeof(WCHAR)); wfmt(tx, 400, L"FilesGameSave=1\nname=%ls\n", g->name);
+    for (int i = 0; i < g->np; i++) { if (!path_exists(g->p[i])) continue; const WCHAR *b = base_name(g->p[i]); WCHAR line[2 * MAX_PATH + 40]; wfmt(line, 2 * MAX_PATH + 40, L"path=%ls|p%d_%ls\n", g->p[i], i, *b ? b : L"root"); lstrcatW(tx, line); any++; }
+    if (!any) { free(tx); return -1; }
+    int bl = WideCharToMultiByte(CP_UTF8, 0, tx, -1, NULL, 0, NULL, NULL); char *ub = (char *)malloc(bl + 1); WideCharToMultiByte(CP_UTF8, 0, tx, -1, ub, bl, NULL, NULL); free(tx);
+    HANDLE mh = CreateFileW(mf, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (mh == INVALID_HANDLE_VALUE) { free(ub); return 0; } DWORD w = 0; WriteFile(mh, ub, bl > 0 ? bl - 1 : 0, &w, NULL); CloseHandle(mh); free(ub);
+    HANDLE h = CreateFileW(out, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL); if (h == INVALID_HANDLE_VALUE) { DeleteFileW(mf); return 0; }
+    CompCtx c; memset(&c, 0, sizeof c); ZW z; Sink sk = { fsink_write, h }; zw_init(&z, sk); c.z = &z; c.mode = 0; comp_add(&c, mf, "_gamesave.txt", 0, 0);
+    for (int i = 0; i < g->np; i++) { if (!path_exists(g->p[i])) continue; const WCHAR *b = base_name(g->p[i]); WCHAR en[300]; wfmt(en, 300, L"p%d_%ls", i, *b ? b : L"root"); char rel[700]; WideCharToMultiByte(CP_UTF8, 0, en, -1, rel, 700, NULL, NULL); comp_add(&c, g->p[i], rel, dir_exists(g->p[i]), 0); }
+    int ok = zw_finish(&z) == 0; CloseHandle(h); DeleteFileW(mf); if (!ok) DeleteFileW(out); return ok;
+}
+static void game_backup(int all) {
+    int idx[256]; int n = 0; if (all) { for (int k = 0; k < C.games.n && n < 256; k++) idx[n++] = k; } else n = game_pick_sel(idx, 256);
+    if (!n) { toast(all ? L"No games yet - use Add game" : L"Select a game first"); return; }
+    SYSTEMTIME st; GetLocalTime(&st); WCHAR dir[MAX_PATH] = L""; WCHAR single[MAX_PATH] = L"";
+    if (n == 1) { GameE g; game_parse(C.games.v[idx[0]], &g); WCHAR nm[128]; scpy(nm, 128, g.name); game_clean_name(nm); wfmt(single, MAX_PATH, L"%ls_save_%04d%02d%02d_%02d%02d.zip", nm, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute); game_free(&g);
+        OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Game save backup (*.zip)\0*.zip\0"; o.lpstrFile = single; o.nMaxFile = MAX_PATH; o.lpstrDefExt = L"zip"; o.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR; o.lpstrTitle = L"Save the game backup as";
+        if (!GetSaveFileNameW(&o)) return; }
+    else if (!game_folder_dialog(L"Choose a folder to store the backups", dir)) return;
+    HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT)); int good = 0, bad = 0, missing = 0;
+    for (int i = 0; i < n; i++) {
+        if (idx[i] < 0 || idx[i] >= C.games.n) continue; GameE g; game_parse(C.games.v[idx[i]], &g); WCHAR out[MAX_PATH];
+        if (n == 1) scpy(out, MAX_PATH, single); else { WCHAR nm[128]; scpy(nm, 128, g.name); game_clean_name(nm); WCHAR fn[200]; wfmt(fn, 200, L"%ls_save_%04d%02d%02d_%02d%02d.zip", nm, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute); path_join(out, MAX_PATH, dir, fn); }
+        int r = game_zip(&g, out); if (r > 0) good++; else if (r < 0) missing++; else bad++; game_free(&g);
+    }
+    SetCursor(oc); WCHAR m[240];
+    if (missing && !good && !bad) fm_msgbox(L"The save location was not found, so nothing was backed up.\nCheck the game's folder (right-click > Add save location).", L"Game backup", MB_OK | MB_ICONWARNING);
+    else if (bad) { wfmt(m, 240, L"%d backup(s) saved, %d failed (could not write the file).", good, bad); fm_msgbox(m, L"Game backup", MB_OK | MB_ICONWARNING); }
+    else { wfmt(m, 240, good == 1 ? L"Game backup saved" : L"%d game backups saved", good); toast(m); }
+}
+
+/* ---- restore ---- */
+typedef struct { WCHAR orig[MAX_PATH], ent[300]; } GRe;
+static void game_restore(void) {
+    WCHAR f[MAX_PATH] = L""; OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = g_dlg_top ? g_dlg_top : S.hwnd; o.lpstrFilter = L"Game save backup (*.zip)\0*.zip\0All files\0*.*\0"; o.lpstrFile = f; o.nMaxFile = MAX_PATH; o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR; o.lpstrTitle = L"Choose a game save backup";
+    if (!GetOpenFileNameW(&o)) return;
+    WCHAR stage[MAX_PATH]; path_join(stage, MAX_PATH, CONFIG_DIR, L"game_stage"); delete_tree(stage); CreateDirectoryW(stage, NULL);
+    HCURSOR oc = SetCursor(LoadCursor(NULL, IDC_WAIT)); WCHAR msg[200] = L""; do_extract(f, stage, msg); SetCursor(oc);
+    GRe *re = (GRe *)calloc(16, sizeof(GRe)); int ne = 0; WCHAR name[128] = L""; int manifest = 0;
+    WCHAR mf[MAX_PATH]; path_join(mf, MAX_PATH, stage, L"_gamesave.txt"); HANDLE mh = CreateFileW(mf, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (mh != INVALID_HANDLE_VALUE) {
+        DWORD got = 0; char *b = (char *)calloc(1, 131073); ReadFile(mh, b, 131072, &got, NULL); CloseHandle(mh); int wl = MultiByteToWideChar(CP_UTF8, 0, b, -1, NULL, 0); WCHAR *w = (WCHAR *)calloc(wl + 2, sizeof(WCHAR)); MultiByteToWideChar(CP_UTF8, 0, b, -1, w, wl); free(b);
+        if (wcsstr(w, L"FilesGameSave=1")) { manifest = 1; WCHAR *ln = w; while (ln && *ln) { WCHAR *nl = wcschr(ln, '\n'); if (nl) *nl = 0; int l = lstrlenW(ln); if (l && ln[l - 1] == '\r') ln[l - 1] = 0;
+                if (!wcsncmp(ln, L"name=", 5)) scpy(name, 128, ln + 5); else if (!wcsncmp(ln, L"path=", 5) && ne < 16) { WCHAR *bar = wcsrchr(ln + 5, '|'); if (bar) { *bar = 0; scpy(re[ne].orig, MAX_PATH, ln + 5); scpy(re[ne].ent, 300, bar + 1); ne++; } }
+                ln = nl ? nl + 1 : NULL; } }
+        free(w);
+    }
+    if (!manifest) {   /* a plain .zip: every top-level item is restored */
+        WCHAR pat[MAX_PATH]; path_join(pat, MAX_PATH, stage, L"*"); WIN32_FIND_DATAW fd; HANDLE q = FindFirstFileW(pat, &fd);
+        if (q != INVALID_HANDLE_VALUE) { do { if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..") || ne >= 16) continue; re[ne].orig[0] = 0; scpy(re[ne].ent, 300, fd.cFileName); ne++; } while (FindNextFileW(q, &fd)); FindClose(q); }
+        WCHAR tmp[MAX_PATH]; scpy(tmp, MAX_PATH, base_name(f)); WCHAR *dot = wcsrchr(tmp, '.'); if (dot) *dot = 0; scpy(name, 128, tmp);
+    }
+    int have = 0; for (int i = 0; i < ne; i++) { WCHAR s[MAX_PATH]; path_join(s, MAX_PATH, stage, re[i].ent); if (path_exists(s)) have++; }
+    if (!have) { fm_msgbox(L"This backup contains no files that can be restored.", L"Restore game save", MB_OK | MB_ICONWARNING); goto done; }
+    int orig_ok = manifest; for (int i = 0; i < ne; i++) if (!re[i].orig[0]) orig_ok = 0;
+    WCHAR dest[MAX_PATH] = L""; int use_orig = 0;
+    if (orig_ok) {
+        WCHAR m[MAX_PATH + 320]; wfmt(m, MAX_PATH + 320, L"Restore \"%ls\" to its original save location?\n\n%ls%ls\n\nYes = original location\nNo = choose another save folder\nCancel = stop", name, re[0].orig, ne > 1 ? L"  (and more)" : L"");
+        int r = fm_msgbox(m, L"Restore game save", MB_YESNOCANCEL | MB_ICONQUESTION); if (r == IDCANCEL) goto done; use_orig = r == IDYES;
+    }
+    if (!use_orig && !game_folder_dialog(L"Choose the game's save folder to restore into", dest)) goto done;
+    {   /* confirm overwrite */
+        int exists = 0; for (int i = 0; i < ne; i++) { if (use_orig) { if (path_exists(re[i].orig)) exists = 1; } else if (dir_exists(dest)) { WCHAR *u = wcschr(re[i].ent, '_'); WCHAR t[MAX_PATH]; path_join(t, MAX_PATH, dest, (re[i].ent[0] == 'p' && u) ? u + 1 : re[i].ent); if (path_exists(t)) exists = 1; } }
+        WCHAR m[MAX_PATH + 260]; wfmt(m, MAX_PATH + 260, exists ? L"Files that already exist in\n%ls\nwill be replaced by the backup. Continue?" : L"Restore the saved files into\n%ls ?", use_orig ? re[0].orig : dest);
+        if (fm_msgbox(m, L"Restore game save", MB_YESNO | (exists ? MB_ICONWARNING : MB_ICONQUESTION)) != IDYES) goto done;
+    }
+    {
+        int ok = 0, bad = 0; oc = SetCursor(LoadCursor(NULL, IDC_WAIT));
+        for (int i = 0; i < ne; i++) {
+            WCHAR src[MAX_PATH], dst[MAX_PATH]; path_join(src, MAX_PATH, stage, re[i].ent); if (!path_exists(src)) continue; int isd = dir_exists(src);
+            if (use_orig) scpy(dst, MAX_PATH, re[i].orig);
+            else if (ne == 1 && isd) scpy(dst, MAX_PATH, dest);
+            else { WCHAR *u = wcschr(re[i].ent, '_'); path_join(dst, MAX_PATH, dest, (re[i].ent[0] == 'p' && u) ? u + 1 : re[i].ent); }
+            WCHAR t[MAX_PATH + 4]; if (isd) { wfmt(t, MAX_PATH + 4, L"%ls\\", dst); ensure_dirs(t); } else { scpy(t, MAX_PATH + 4, dst); ensure_dirs(t); }
+            if (copy_tree(src, dst)) ok++; else bad++;
+        }
+        SetCursor(oc);
+        if (manifest && name[0] && game_find(name) < 0) { WCHAR *ps[16]; int np = 0; if (use_orig) { for (int i = 0; i < ne; i++) ps[np++] = re[i].orig; } else ps[np++] = dest; if (np) { game_set(-1, name, ps, np); cfg_save(); } }
+        if (!wcscmp(curtab()->path, L"::games")) reload(0);
+        if (bad) { WCHAR m[200]; wfmt(m, 200, L"%d item(s) restored, %d could not be written (is the game running?).", ok, bad); fm_msgbox(m, L"Restore game save", MB_OK | MB_ICONWARNING); }
+        else toast(L"Game save restored");
+    }
+done:
+    free(re); delete_tree(stage);
 }
 
 /* ========================================================================== */
@@ -4021,30 +4903,34 @@ static PMenu *build_menu(int w) {
     PMenu *m = pm_new(); Tab *t = curtab(); int real = t->path[0] && !is_special(t->path); int ns = sel_count(t, NULL);
     if (w == 0) { mi(m, CMD_NEWTAB, L"New tab\tCtrl+T", 0, 1); mi(m, CMD_NEWFOLDER, L"New folder\tCtrl+Shift+N", 0, real); mi(m, CMD_NEWFILE, L"New text file", 0, real); pm_sep(m); mi(m, CMD_CMD, L"Open CMD here", 0, 1); mi(m, CMD_PROPS, L"Properties\tAlt+Enter", 0, ns == 1); mi(m, CMD_SETTINGS, L"Settings...", 0, 1); pm_sep(m); mi(m, CMD_EXIT, L"Exit", 0, 1); }
     else if (w == 1) { mi(m, CMD_CUT, L"Cut\tCtrl+X", 0, ns > 0); mi(m, CMD_COPY, L"Copy\tCtrl+C", 0, ns > 0); mi(m, CMD_PASTE, L"Paste\tCtrl+V", 0, S.clip.n > 0 && real); pm_sep(m); mi(m, CMD_SELALL, L"Select all\tCtrl+A", 0, 1); mi(m, CMD_SELNONE, L"Select none", 0, 1); mi(m, CMD_INVERT, L"Invert selection", 0, 1);
-        pm_sep(m); mi(m, CMD_RENAME, L"Rename\tF2", 0, ns == 1); mi(m, CMD_DELETE, L"Delete\tDel", 0, ns > 0); mi(m, CMD_COPYPATH, L"Copy path", 0, ns == 1); mi(m, CMD_SHORTCUT, L"Create shortcut on Desktop", 0, ns > 0); mi(m, CMD_SHORTCUT_HERE, L"Create shortcut here", 0, ns > 0 && real); }
+        pm_sep(m); mi(m, CMD_RENAME, L"Rename\tF2", 0, ns == 1); mi(m, CMD_DELETE, C.recycle ? L"Delete (to Recycle Bin)\tDel" : L"Delete\tDel", 0, ns > 0); mi(m, CMD_DELETE_PERM, L"Delete permanently\tShift+Del", 0, ns > 0); mi(m, CMD_COPYPATH, L"Copy path", 0, ns == 1); mi(m, CMD_SHORTCUT, L"Create shortcut on Desktop", 0, ns > 0); mi(m, CMD_SHORTCUT_HERE, L"Create shortcut here", 0, ns > 0 && real); }
     else if (w == 2) { int vm = view_mode(); mi(m, CMD_VDET, L"Details", vm == 0, 1); mi(m, CMD_VICON, L"Icons", vm == 1, 1); mi(m, CMD_VTILE, L"Tiles", vm == 2, 1); pm_sep(m); add_sort_menu(pm_sub(m, L"Sort by")); pm_sep(m);
         mi(m, CMD_PREVIEW, L"Preview pane", C.show_preview, 1); mi(m, CMD_TREE, L"Tree view", C.show_tree, 1); mi(m, CMD_CHECKS, L"Selection tick boxes", C.checkboxes, 1); mi(m, CMD_HIDDEN, L"Show hidden files", C.show_hidden, 1); mi(m, CMD_THUMBS, L"Thumbnails", C.thumbnails, 1); mi(m, CMD_COUNTS, L"Counts in status bar", C.show_counts, 1);
         pm_sep(m); mi(m, CMD_ICON_PLUS, L"Larger icons", 0, 1); mi(m, CMD_ICON_MINUS, L"Smaller icons", 0, 1); mi(m, CMD_ZOOM_IN, L"Zoom interface in\tCtrl+=", 0, 1); mi(m, CMD_ZOOM_OUT, L"Zoom interface out\tCtrl+-", 0, 1); mi(m, CMD_PREVW, L"Cycle preview width", 0, C.show_preview); mi(m, CMD_RIBBON, L"Command strip", C.ribbon_open, 1); pm_sep(m); mi(m, CMD_REFRESH, L"Refresh\tF5", 0, 1); }
-    else if (w == 3) { mi(m, CMD_BACK, L"Back\tAlt+Left", 0, t->hidx > 0); mi(m, CMD_FWD, L"Forward\tAlt+Right", 0, t->hidx < t->hist.n - 1); mi(m, CMD_UP, L"Up\tBackspace", 0, t->path[0] != 0); pm_sep(m); mi(m, CMD_HOME, cur_style()->sec[0], 0, 1); mi(m, CMD_RECENT, cur_style()->sec[1], 0, 1); mi(m, CMD_FAV, cur_style()->sec[2], 0, 1); mi(m, CMD_PC, cur_style()->sec[3], 0, 1); }
-    else if (w == 4) { mi(m, CMD_STYLES, L"Styles dialog...", 0, 1); mi(m, CMD_OSNEXT, L"Switch to next OS theme", 0, 1); pm_sep(m);
+    else if (w == 3) { mi(m, CMD_BACK, L"Back\tAlt+Left", 0, t->hidx > 0); mi(m, CMD_FWD, L"Forward\tAlt+Right", 0, t->hidx < t->hist.n - 1); mi(m, CMD_UP, L"Up\tBackspace", 0, t->path[0] != 0); pm_sep(m); mi(m, CMD_HOME, cur_style()->sec[0], 0, 1); mi(m, CMD_RECENT, cur_style()->sec[1], 0, 1); mi(m, CMD_FAV, cur_style()->sec[2], 0, 1); mi(m, CMD_PC, cur_style()->sec[3], 0, 1); mi(m, CMD_APPS, C.apps_title[0] ? C.apps_title : L"Computer", 0, 1); mi(m, CMD_GAMES, L"Games", 0, 1); mi(m, CMD_TRASH, L"Recycle Bin", 0, 1); }
+    else if (w == 4) { mi(m, CMD_LAYOUT_EDIT, L"Layout editor (move / resize / recolour)...", g_ed, 1); mi(m, CMD_LAYOUT_NAVSIDE, L"Navigation pane on the right", C.nav_right, 1); pm_sep(m); mi(m, CMD_STYLES, L"Styles dialog...", 0, 1); mi(m, CMD_OSNEXT, L"Switch to next OS theme", 0, 1); pm_sep(m);
         PMenu *sm = pm_sub(m, L"Quick look picker"); for (int i = 0; i < (int)NSTYLES; i++) mi(sm, CMD_STYLE0 + STYLE_ORDER[i], OS_STYLES[STYLE_ORDER[i]].label, STYLE_ORDER[i] == style_index(C.os_style), 1);
         if (is_win10()) { PMenu *th = pm_sub(m, L"Theme"); for (int i = 0; i < (int)NTHEMES; i++) mi(th, CMD_THEME0 + i, FM_THEMES[i].name, wieq(C.theme, FM_THEMES[i].name), 1); } else mi(m, CMD_DARK, L"Dark variant", C.style_dark, cur_style()->has_dark);
         add_accent_menu(pm_sub(m, L"Accent colour")); mi(m, CMD_STYLEFONTS, L"Use the look's fonts", C.style_fonts, 1); }
     else { PMenu *a = pm_sub(m, L"Autostart"); mi(a, CMD_AUTO_EN, L"Run chosen apps when Files starts", C.autostart_enabled, 1); mi(a, CMD_AUTO_ADD, L"Add program or file...", 0, 1); pm_sep(a);
         for (int i = 0; i < C.autostart_apps.n && i < 40; i++) { WCHAR l[MAX_PATH + 16]; wfmt(l, MAX_PATH + 16, L"Remove: %ls", base_name(C.autostart_apps.v[i])); mi(a, CMD_AUTOREM0 + i, l, 0, 1); } if (C.autostart_apps.n) pm_sep(a); mi(a, CMD_AUTO_RUN, L"Run now", 0, C.autostart_apps.n > 0); mi(a, CMD_AUTO_LOGIN, L"Start with Windows (Run key)", run_at_login_enabled(), 1);
-        pm_sep(m); mi(m, CMD_SUBFOLDERS, L"Search inside subfolders", C.search_subfolders, 1); mi(m, CMD_RESTORE, L"Restore tabs on start", C.restore_session, 1); mi(m, CMD_FONT_PLUS, L"Larger font", 0, 1); mi(m, CMD_FONT_MINUS, L"Smaller font", 0, 1); pm_sep(m); mi(m, CMD_BACKUP, L"Back up settings...", 0, 1); mi(m, CMD_RESTORE_CFG, L"Restore settings...", 0, 1); pm_sep(m); mi(m, CMD_SETTINGS, L"Settings...", 0, 1); mi(m, CMD_ABOUT, L"About", 0, 1); }
+        pm_sep(m); mi(m, CMD_SUBFOLDERS, L"Search inside subfolders", C.search_subfolders, 1); mi(m, CMD_RESTORE, L"Restore tabs on start", C.restore_session, 1); mi(m, CMD_FONT_PLUS, L"Larger font", 0, 1); mi(m, CMD_FONT_MINUS, L"Smaller font", 0, 1); pm_sep(m); mi(m, CMD_BACKUP_FULL, L"Full backup (settings, icons, shortcuts)...", 0, 1); mi(m, CMD_RESTORE_FULL, L"Full restore...", 0, 1); mi(m, CMD_BACKUP, L"Back up settings only...", 0, 1); mi(m, CMD_RESTORE_CFG, L"Restore settings only...", 0, 1); pm_sep(m); mi(m, CMD_SETTINGS, L"Settings...", 0, 1); mi(m, CMD_ABOUT, L"About", 0, 1); }
     return m;
 }
 static void main_menu(void) { PMenu *m = pm_new(); static const WCHAR *n[6] = { L"File", L"Edit", L"View", L"Go", L"Style", L"Tools" }; for (int i = 0; i < 6; i++) { PMenu *s = pm_sub(m, n[i]); PMenu *b = build_menu(i); for (int k = 0; k < b->n; k++) { PMItem *d = pm_push(s); *d = b->it[k]; } free(b->it); free(b); }
     popup_at(m, LY.menu.left, LY.menu.bottom); pm_free(m); }
 static void add_ow_submenu(PMenu *m) { ow_collect(); PMenu *s = pm_sub(m, L"Open with"); for (int i = 0; i < g_now && i < 300; i++) mi(s, CMD_OW0 + i, g_ow[i].name, 0, 1); pm_sep(s); mi(s, CMD_OW_MORE, L"Choose another app...", 0, 1); }
 static void item_menu(int x, int y) {
-    Tab *t = curtab(); Item *f = focus_item(t); if (!f) return; PMenu *m = pm_new(); int ns = sel_count(t, NULL); int real = f->kind != 1; int arc = !f->dir && arc_kind_of(f->path) != ARC_NONE && !ext_in(f->path, L".docx.xlsx.pptx.");
-    mi(m, CMD_OPEN, L"Open", 0, 1); if (!f->dir) add_ow_submenu(m); if (C.admin_menu && !f->dir && ext_in(f->path, L".exe.bat.cmd.msi.lnk.com.")) mi(m, CMD_ADMIN, L"Run as administrator", 0, 1); pm_sep(m);
+    Tab *t = curtab(); Item *f = focus_item(t); if (!f) return; PMenu *m = pm_new(); int ns = sel_count(t, NULL); int real = f->kind != 1;
+    if (!wcscmp(t->path, L"::trash")) { pm_add(m, CMD_RESTORE_TRASH, L"Restore", 0, 1); pm_add(m, CMD_DELETE_PERM, L"Delete permanently", 0, 1); pm_sep(m); pm_add(m, CMD_EMPTY_TRASH, L"Empty Recycle Bin", 0, 1); pm_add(m, CMD_PROPS, L"Properties", 0, ns == 1); popup_at(m, x, y); pm_free(m); return; }
+    if (!wcscmp(t->path, L"::games")) { pm_add(m, CMD_OPEN, L"Open save folder", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_BACKUP, L"Backup saves...", 0, 1); pm_add(m, CMD_GAME_RESTORE, L"Restore a saved backup...", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_ADDPATH, L"Add save folder/files...", 0, ns == 1); pm_add(m, CMD_RENAME, L"Rename", 0, ns == 1); pm_add(m, CMD_GAME_REMOVE, L"Remove from list", 0, 1); pm_sep(m); pm_add(m, CMD_GAME_ADD, L"Add game...", 0, 1); pm_add(m, CMD_PROPS, L"Properties", 0, ns == 1); popup_at(m, x, y); pm_free(m); return; }
+    if (!wcscmp(t->path, L"::apps")) { pm_add(m, CMD_OPEN, L"Open", 0, 1); if (C.admin_menu) pm_add(m, CMD_ADMIN, L"Run as administrator", 0, 1); pm_sep(m); pm_add(m, CMD_APP_UP, L"Move up", 0, 1); pm_add(m, CMD_APP_DOWN, L"Move down", 0, 1); pm_add(m, CMD_APP_TOP, L"Move to top", 0, 1); pm_sep(m); pm_add(m, CMD_APP_REMOVE, L"Remove from this list", 0, 1);
+        pm_add(m, CMD_SHORTCUT, L"Create shortcut on Desktop", 0, 1); pm_add(m, CMD_PROPS, L"Properties", 0, ns == 1); pm_sep(m); pm_add(m, CMD_APP_ADD, L"Add application...", 0, 1); pm_add(m, CMD_APP_RESET, L"Reset the list", 0, 1); popup_at(m, x, y); pm_free(m); return; } int arc = !f->dir && arc_kind_of(f->path) != ARC_NONE && !ext_in(f->path, L".docx.xlsx.pptx.");
+    mi(m, CMD_OPEN, L"Open", 0, 1); if (!f->dir) mi(m, CMD_OPEN_VIEWER, L"Open in Viewer", 0, 1); if (!f->dir) add_ow_submenu(m); if (C.admin_menu && !f->dir && ext_in(f->path, L".exe.bat.cmd.msi.lnk.com.")) mi(m, CMD_ADMIN, L"Run as administrator", 0, 1); pm_sep(m);
     if (real) {
         if (arc) { add_extract_menu(pm_sub(m, L"Extract"), 1); }
         add_compress_menu(pm_sub(m, L"Compress to")); pm_sep(m); mi(m, CMD_CUT, L"Cut", 0, 1); mi(m, CMD_COPY, L"Copy", 0, 1); mi(m, CMD_COPYPATH, L"Copy path", 0, ns == 1); pm_sep(m);
-        mi(m, CMD_RENAME, L"Rename", 0, ns == 1); mi(m, CMD_DELETE, L"Delete", 0, 1); pm_sep(m); mi(m, CMD_PIN, is_pinned(f) ? L"Unpin from top" : L"Pin to top", 0, 1);
+        mi(m, CMD_RENAME, L"Rename", 0, ns == 1); mi(m, CMD_DELETE, C.recycle ? L"Delete (to Recycle Bin)" : L"Delete", 0, 1); if (C.recycle) mi(m, CMD_DELETE_PERM, L"Delete permanently", 0, 1); pm_sep(m); mi(m, CMD_PIN, is_pinned(f) ? L"Unpin from top" : L"Pin to top", 0, 1);
         if (f->dir) { mi(m, CMD_FAVTOGGLE, sl_find(&C.favorites, f->path) >= 0 ? L"Remove from Favorites" : L"Add to Favorites", 0, 1); PMenu *c = pm_sub(m, L"Folder colour"); for (int i = 0; i < 12; i++) pm_swatch(c, CMD_COLOR0 + i, FOLDER_PAL_NAMES[i], RGB((FOLDER_PALETTE[i] >> 16) & 255, (FOLDER_PALETTE[i] >> 8) & 255, FOLDER_PALETTE[i] & 255), 0); pm_sep(c); mi(c, CMD_FOLDERCOLOR_CLEAR, L"Default colour", 0, 1); }
         PMenu *ic = pm_sub(m, L"Custom icon"); mi(ic, CMD_SETICON, L"For this item...", 0, 1); mi(ic, CMD_SETICON_EXT, L"For all files of this type...", 0, !f->dir); mi(ic, CMD_SETICON_DIR, L"For all folders...", 0, 1); pm_sep(ic); mi(ic, CMD_CLEARICON, L"Remove custom icon", 0, 1);
         pm_sep(m); mi(m, CMD_SHORTCUT, L"Create shortcut on Desktop", 0, 1); mi(m, CMD_SHORTCUT_HERE, L"Create shortcut here", 0, 1); pm_sep(m); mi(m, CMD_PROPS, L"Properties", 0, ns == 1);
@@ -4053,9 +4939,12 @@ static void item_menu(int x, int y) {
 }
 static void blank_menu(int x, int y) {
     Tab *t = curtab(); int real = t->path[0] && !is_special(t->path); PMenu *m = pm_new(); int vm = view_mode();
+    if (!wcscmp(t->path, L"::trash")) { pm_add(m, CMD_RESTORE_TRASH, L"Restore all items", 0, t->nv > 0); pm_add(m, CMD_EMPTY_TRASH, L"Empty Recycle Bin", 0, t->nv > 0); pm_sep(m); pm_add(m, CMD_REFRESH, L"Refresh", 0, 1); popup_at(m, x, y); pm_free(m); return; }
+    if (!wcscmp(t->path, L"::games")) { pm_add(m, CMD_GAME_ADD, L"Add game...", 0, 1); pm_add(m, CMD_GAME_BACKUP_ALL, L"Backup all games", 0, t->n > 0); pm_add(m, CMD_GAME_RESTORE, L"Restore a saved backup...", 0, 1); pm_sep(m); pm_add(m, CMD_REFRESH, L"Refresh", 0, 1); popup_at(m, x, y); pm_free(m); return; }
+    if (!wcscmp(t->path, L"::apps")) { pm_add(m, CMD_APP_ADD, L"Add application...", 0, 1); pm_add(m, CMD_APP_RESET, L"Reset the list", 0, 1); pm_sep(m); pm_add(m, CMD_REFRESH, L"Refresh", 0, 1); popup_at(m, x, y); pm_free(m); return; }
     PMenu *v = pm_sub(m, L"View"); mi(v, CMD_VDET, L"Details", vm == 0, 1); mi(v, CMD_VICON, L"Icons", vm == 1, 1); mi(v, CMD_VTILE, L"Tiles", vm == 2, 1); add_sort_menu(pm_sub(m, L"Sort by")); pm_sep(m);
     PMenu *nw = pm_sub(m, L"New"); mi(nw, CMD_NEWFOLDER, L"Folder", 0, real); mi(nw, CMD_NEWFILE, L"Text document", 0, real); mi(m, CMD_PASTE, L"Paste", 0, real && S.clip.n); mi(m, CMD_SELALL, L"Select all", 0, 1); pm_sep(m);
-    mi(m, CMD_REFRESH, L"Refresh", 0, 1); mi(m, CMD_CMD, L"Open CMD here", 0, 1); mi(m, CMD_STYLES, L"Styles...", 0, 1); mi(m, CMD_SETTINGS, L"Settings...", 0, 1); popup_at(m, x, y); pm_free(m);
+    mi(m, CMD_REFRESH, L"Refresh", 0, 1); mi(m, CMD_CMD, L"Open CMD here", 0, 1); mi(m, CMD_STYLES, L"Styles...", 0, 1); mi(m, CMD_LAYOUT_EDIT, L"Layout editor...", 0, 1); mi(m, CMD_SETTINGS, L"Settings...", 0, 1); popup_at(m, x, y); pm_free(m);
 }
 static void tab_menu(int idx, int x, int y) { g_tab_ctx = idx; PMenu *m = pm_new(); Tab *t = &S.tabs[idx]; mi(m, CMD_TABDUP, L"Duplicate tab", 0, 1); mi(m, CMD_TABPIN, t->pinned ? L"Unpin tab" : L"Pin tab", 0, 1); pm_sep(m); mi(m, CMD_TABCLOSE, L"Close tab", 0, !t->pinned); mi(m, CMD_TABOTHERS, L"Close other tabs", 0, S.ntabs > 1); popup_at(m, x, y); pm_free(m); }
 static void search_menu(void) {
@@ -4091,7 +4980,16 @@ static void do_cmd(int id) {
     switch (id) {
     case CMD_NEWTAB: new_tab(NULL); break; case CMD_NEWWIN: new_tab(t->path); break; case CMD_NEWFOLDER: new_item(1); break; case CMD_NEWFILE: new_item(0); break; case CMD_CMD: open_cmd(); break; case CMD_EXIT: PostMessageW(S.hwnd, WM_CLOSE, 0, 0); break;
     case CMD_CUT: do_copy(1); break; case CMD_COPY: do_copy(0); break; case CMD_PASTE: do_paste(); break; case CMD_SELALL: select_all(); break; case CMD_INVERT: invert_sel(); break; case CMD_SELNONE: sel_clear(t); preview_update(); redraw(); break;
-    case CMD_RENAME: begin_rename(); break; case CMD_DELETE: do_delete(); break; case CMD_COPYPATH: copy_path_text(f); break; case CMD_PROPS: show_properties(f); break;
+    case CMD_RENAME: begin_rename(); break; case CMD_DELETE: do_delete(0); break; case CMD_DELETE_PERM: do_delete(1); break;
+    case CMD_RESTORE_TRASH: do_restore_trash(); break; case CMD_EMPTY_TRASH: do_empty_trash(); break; case CMD_TRASH: navigate(L"::trash", 1); break; case CMD_APPS: navigate(L"::apps", 1); break;
+    case CMD_OPEN_VIEWER: { Item *vf = focus_item(curtab()); if (vf && !vf->dir && vf->kind != 1) open_in_viewer(vf->path); else toast(L"Select a file first"); break; }
+    case CMD_GAMES: navigate(L"::games", 1); break; case CMD_GAME_ADD: game_add(-1); break; case CMD_GAME_BACKUP: game_backup(0); break; case CMD_GAME_BACKUP_ALL: game_backup(1); break; case CMD_GAME_RESTORE: game_restore(); break; case CMD_GAME_REMOVE: game_remove(); break;
+    case CMD_GAME_ADDPATH: { int gi[2]; if (game_pick_sel(gi, 2) == 1) game_add(gi[0]); else toast(L"Select one game first"); break; }
+    case CMD_APP_ADD: apps_add_dialog(); break; case CMD_APP_UP: apps_move(-1); break; case CMD_APP_DOWN: apps_move(1); break; case CMD_APP_TOP: apps_move(2); break; case CMD_APP_RESET: apps_reset(); break;
+    case CMD_APP_REMOVE: do_delete(0); break;
+    case CMD_LAYOUT_EDIT: lay_set_ed(!g_ed); break; case CMD_LAYOUT_SAVE: if (!g_ed) lay_set_ed(1); lay_prompt_name(); break; case CMD_LAYOUT_RESET: lay_reset(); break; case CMD_LAYOUT_NAVSIDE: C.nav_right = !C.nav_right; lay_commit(); break;
+    case CMD_FIT_PAGE: pv_fit_ex(&g_pc_panel, 1); redraw(); break; case CMD_BACKUP_FULL: backup_full(0); break; case CMD_RESTORE_FULL: backup_full(1); break;
+    case CMD_LOADBIG: if (fm_msgbox(L"Loading a very large file can be slow and use a lot of memory.\nLoad the preview anyway?", L"Large file", MB_YESNO | MB_ICONQUESTION) == IDYES) { g_force_big = 1; preview_update(); g_force_big = 0; redraw(); } break; case CMD_COPYPATH: copy_path_text(f); break; case CMD_PROPS: show_properties(f); break;
     case CMD_OPEN: if (sel_count(t, NULL) > 1) { for (int i = 0; i < t->nv; i++) { Item *x = &t->it[t->view[i]]; if (x->sel && !x->dir) open_item(x); } } else open_item(f); break;
     case CMD_OPENWITH: if (f && !f->dir) { open_with(f); } break; case CMD_OW_MORE: open_with(f); break; case CMD_ADMIN: run_as_admin(f); break;
     case CMD_REFRESH: g_nav_dirty = 1; reload(1); break;
@@ -4147,8 +5045,10 @@ static void begin_rename(void) {
     int len = lstrlenW(it->name); const WCHAR *dot = wcsrchr(it->name, '.'); int stop = (!it->dir && dot && dot != it->name) ? (int)(dot - it->name) : len; SendMessageW(S.e_rename, EM_SETSEL, 0, stop);
 }
 static void rename_end(int commit) {
+    if (S.rename_item == -2) { WCHAR nn[64]; GetWindowTextW(S.e_rename, nn, 64); ShowWindow(S.e_rename, SW_HIDE); S.rename_item = -1; SetFocus(S.hwnd); int l = lstrlenW(nn); while (l && nn[l - 1] == ' ') nn[--l] = 0; if (commit && nn[0]) lay_save_named(nn); return; }
     if (S.rename_item < 0) return; Tab *t = curtab(); int idx = S.rename_item; S.rename_item = -1; WCHAR nn[256]; GetWindowTextW(S.e_rename, nn, 256); ShowWindow(S.e_rename, SW_HIDE); SetFocus(S.hwnd); if (!commit || idx >= t->n) return;
     Item *it = &t->it[idx]; int l = lstrlenW(nn); while (l && nn[l - 1] == ' ') nn[--l] = 0; if (!nn[0] || !wcscmp(nn, it->name)) return; if (wcspbrk(nn, L"\\/:*?\"<>|")) { toast(L"A name cannot contain \\ / : * ? \" < > |"); return; }
+    if (!wcscmp(t->path, L"::games")) { game_rename(it->ord, nn); return; }
     WCHAR par[MAX_PATH], np[MAX_PATH]; parent_of(it->path, par); path_join(np, MAX_PATH, par, nn); if (path_exists(np) && !wieq(np, it->path)) { toast(L"An item with that name already exists"); return; } if (!MoveFileW(it->path, np)) { toast(L"Rename failed"); return; }
     int pk = sl_find(&C.pins, it->path); if (pk >= 0) { free(C.pins.v[pk]); C.pins.v[pk] = wdup(np); } reload(0); for (int i = 0; i < t->nv; i++) if (wieq(t->it[t->view[i]].path, np)) { sel_view(i, 0, 0); ensure_visible(i); break; }
 }
@@ -4192,7 +5092,8 @@ static void do_drop(int ctrl) {
     Tab *t = curtab(); WCHAR dest[MAX_PATH] = L""; if (g_in.drop_item >= 0 && g_in.drop_item < t->nv) { Item *d = &t->it[t->view[g_in.drop_item]]; if (d->dir && !d->sel && d->kind != 1) scpy(dest, MAX_PATH, d->path); }
     else if (g_in.drop_nav >= 0 && g_in.drop_nav < S.nnav) { NavEnt *e = &S.nav[g_in.drop_nav]; if (e->path[0] && !is_special(e->path) && dir_exists(e->path)) scpy(dest, MAX_PATH, e->path); }
     if (!dest[0]) return; SL s = { 0 }; collect_sel(t, &s); int ok = s.n > 0; for (int i = 0; i < s.n; i++) if (under_path(dest, s.v[i])) ok = 0; if (ok) { WCHAR par[MAX_PATH]; parent_of(s.v[0], par); if (!ctrl && wieq(par, dest)) ok = 0; }
-    if (ok) start_transfer(dest, &s, !ctrl); else toast(L"Cannot drop here"); sl_clear(&s); free(s.v);
+    if (ok && C.confirm_ops) { WCHAR m[MAX_PATH + 120]; wfmt(m, MAX_PATH + 120, L"%ls %d item(s) to:\n%ls ?", ctrl ? L"Copy" : L"Move", s.n, dest); if (fm_msgbox(m, ctrl ? L"Confirm copy" : L"Confirm move", MB_YESNO | MB_ICONQUESTION) != IDYES) ok = 0; }
+    if (ok) start_transfer(dest, &s, !ctrl); else toast(L"Cancelled / cannot drop here"); sl_clear(&s); free(s.v);
 }
 static void ribbon_click(int i) {
     int id = g_rb_id[i]; if (!id) return; if (id == CMD_SORT_NAME + 0x4000) { PMenu *m = pm_new(); add_sort_menu(m); popup_at(m, g_rb[i].left, g_rb[i].bottom); pm_free(m); return; }
@@ -4205,6 +5106,8 @@ static void ribbon_click(int i) {
 }
 static void on_lbutton(int x, int y, WPARAM wp) {
     Tab *t = curtab(); SetFocus(S.hwnd); int ctrl = (wp & MK_CONTROL) != 0, shift = (wp & MK_SHIFT) != 0; g_defer_vi = -1;
+    if (g_ed) { lay_down(x, y); SetCapture(S.hwnd); return; }
+    for (int k = 0; k < g_nlr; k++) if (in_rect(&g_lrect[k], x, y)) { WCHAR id[4]; wfmt(id, 4, L"L%d", k); LOv *o = lay_find(id, 0); if (o && o->path[0]) { Item tmp; memset(&tmp, 0, sizeof tmp); scpy(tmp.path, MAX_PATH, o->path); scpy(tmp.name, 256, base_name(o->path)); tmp.dir = dir_exists(o->path); open_item(&tmp); return; } }
     for (int i = 0; i < 3; i++) if (in_rect(&LY.capbtn[i], x, y)) { cap_action(i); return; }
     for (int i = 0; i < 6; i++) if (in_rect(&LY.ribtab[i], x, y)) { do_cmd(CMD_TAB0 + i); return; } if (in_rect(&LY.ribcol, x, y)) { do_cmd(CMD_RIBBON); return; }
     if (LY.has_strip && in_rect(&LY.strip, x, y)) { for (int i = 0; i < g_nrb; i++) if (in_rect(&g_rb[i], x, y)) { ribbon_click(i); return; } return; }
@@ -4215,9 +5118,9 @@ static void on_lbutton(int x, int y, WPARAM wp) {
     if (S.ntabs > 1 && y >= LY.tabs.top && y < LY.tabs.bottom) { for (int i = 0; i < S.ntabs; i++) if (in_rect(&g_tabr[i], x, y)) { if (!S.tabs[i].pinned && x > g_tabr[i].right - px(24)) close_tab(i); else if (i != S.cur) switch_tab(i); return; } if (in_rect(&g_tabplus, x, y)) new_tab(NULL); return; }
     for (int i = 0; i < 3; i++) if (in_rect(&LY.views[i], x, y)) { do_cmd(CMD_VDET + i); return; }
     if (LY.split.right > LY.split.left && in_rect(&LY.split, x, y)) { g_splitdrag = 1; SetCapture(S.hwnd); return; }
-    if (x < LY.nav.right && y >= LY.nav.top && y < LY.nav.bottom) { int i = nav_hit(x, y); if (i < 0) return; NavEnt *e = &S.nav[i];
+    if (in_rect(&LY.nav, x, y)) { int i = nav_hit(x, y); if (i < 0) return; NavEnt *e = &S.nav[i];
         if (e->root && x < LY.nav.left + px(22) && e->sect < 4) { S.nav_open[e->sect] = !S.nav_open[e->sect]; nav_rebuild(); redraw(); return; }
-        if (!e->root && e->exp >= 0 && x < LY.nav.left + px(24) + e->depth * px(14) + px(2)) { nav_toggle(i); return; } WCHAR p[MAX_PATH]; scpy(p, MAX_PATH, e->path); navigate(p, 1); return; }
+        if (!e->root && e->exp >= 0 && nav_arrow_hit(e, x)) { nav_toggle(i); return; } WCHAR p[MAX_PATH]; scpy(p, MAX_PATH, e->path); navigate(p, 1); return; }
     if (LY.preview.right > LY.preview.left && in_rect(&LY.preview, x, y)) { POINT pt = { x, y }; ClientToScreen(S.hwnd, &pt); if (pv_click(&g_pc_panel, x, y, pt.x, pt.y + px(20))) { if (g_pc_panel.selecting || g_pc_panel.dragv || g_pc_panel.dragh) { g_pvcap = 1; SetCapture(S.hwnd); } redraw(); } return; }
     if (view_mode() == 0 && in_rect(&LY.hdr, x, y)) { click_header(x); return; }
     if (in_rect(&LY.sb, x, y)) { int th = total_h(), vh = LY.sb.bottom - LY.sb.top; if (th <= vh) return; int tl = vh * vh / th; if (tl < px(24)) tl = px(24); int rng = vh - tl, mx = th - vh, ty = LY.sb.top + (int)((double)t->scroll / mx * rng);
@@ -4230,7 +5133,7 @@ static void on_lbutton(int x, int y, WPARAM wp) {
         else if (!ctrl && !shift) { sel_clear(t); preview_update(); redraw(); } }
 }
 static void on_lbuttonup(int x, int y) {
-    Tab *t = curtab(); int was = 0;
+    Tab *t = curtab(); int was = 0; if (g_ed) { lay_up(); ReleaseCapture(); return; }
     if (S.dragsb) { S.dragsb = 0; was = 1; } if (g_splitdrag) { g_splitdrag = 0; cfg_save(); was = 1; }
     if (g_pvcap) { g_pvcap = 0; pv_up(&g_pc_panel); was = 1; }
     if (g_in.rb_on) { g_in.rb_on = 0; free(g_rbbase); g_rbbase = NULL; was = 1; int f = -1; for (int i = 0; i < t->nv; i++) if (t->it[t->view[i]].sel) { f = i; break; } t->focus = f; t->anchor = f; preview_update(); }
@@ -4239,20 +5142,22 @@ static void on_lbuttonup(int x, int y) {
     g_defer_vi = -1; (void)x; (void)y; if (was) { ReleaseCapture(); redraw(); }
 }
 static void on_mousemove(int x, int y, WPARAM wp) {
-    Tab *t = curtab(); if (g_splitdrag) { int W = LY.status.right; C.preview_width = (int)((W - x) / C.scale); if (C.preview_width < 160) C.preview_width = 160; g_pv_override = 1; place_edits(); redraw(); return; }
+    Tab *t = curtab(); if (g_ed) { lay_move(x, y); return; }
+    if (g_splitdrag) { int W = C.nav_right ? LY.nav.left : LY.status.right; C.preview_width = (int)((W - x) / C.scale); if (C.preview_width < 160) C.preview_width = 160; g_pv_override = 1; place_edits(); redraw(); return; }
     if (g_pvcap) { pv_move(&g_pc_panel, x, y); return; } if (S.dragsb) { sb_drag_to(y); return; }
     if (g_in.rb_on) { rubber_update(x, y, (wp & MK_CONTROL) != 0); return; }
     if (g_in.drag_pend && (wp & MK_LBUTTON)) { if (!g_in.dragging && (abs(x - g_in.drag_x0) > px(6) || abs(y - g_in.drag_y0) > px(6))) { g_in.dragging = 1; g_defer_vi = -1; } }
-    if (g_in.dragging) { g_in.drop_item = -1; g_in.drop_nav = -1; int vi = hit_item(x, y); if (vi >= 0) { Item *d = &t->it[t->view[vi]]; if (d->dir && !d->sel && d->kind != 1) g_in.drop_item = vi; } else if (x < LY.nav.right) { int ni = nav_hit(x, y); if (ni >= 0 && !S.nav[ni].root) g_in.drop_nav = ni; } redraw(); }
+    if (g_in.dragging) { g_in.drop_item = -1; g_in.drop_nav = -1; int vi = hit_item(x, y); if (vi >= 0) { Item *d = &t->it[t->view[vi]]; if (d->dir && !d->sel && d->kind != 1) g_in.drop_item = vi; } else if (in_rect(&LY.nav, x, y)) { int ni = nav_hit(x, y); if (ni >= 0 && !S.nav[ni].root) g_in.drop_nav = ni; } redraw(); }
 }
 static void on_key(WPARAM vk) {
     Tab *t = curtab(); int ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0, alt = GetKeyState(VK_MENU) < 0; int m = view_mode(), cw = 1, ch = 1, per = 1; if (m) cell_geom(&cw, &ch, &per);
     int vis = (LY.body.bottom - LY.body.top) / (m == 0 ? px(cur_style()->row_h) : ch) * (m == 0 ? 1 : per); if (vis < 1) vis = 1; int nf = t->focus, step = 0;
+    if (g_ed) { if (vk == VK_ESCAPE) lay_set_ed(0); return; }
     if (alt && vk == VK_LEFT) { go_back(); return; } if (alt && vk == VK_RIGHT) { go_fwd(); return; } if (alt && vk == VK_RETURN) { show_properties(focus_item(t)); return; }
     switch (vk) {
     case VK_UP: step = m ? -per : -1; break; case VK_DOWN: step = m ? per : 1; break; case VK_LEFT: if (m) step = -1; break; case VK_RIGHT: if (m) step = 1; break; case VK_PRIOR: step = -vis; break; case VK_NEXT: step = vis; break;
     case VK_HOME: nf = 0; break; case VK_END: nf = t->nv - 1; break; case VK_RETURN: if (ctrl) return; open_item(focus_item(t)); return;
-    case VK_BACK: go_up(); return; case VK_F2: begin_rename(); return; case VK_F5: do_cmd(CMD_REFRESH); return; case VK_F11: if (g_pv.kind >= PK_TEXT) pv_open_full(); return; case VK_DELETE: do_delete(); return; case VK_F4: if (ctrl) close_tab(S.cur); return;
+    case VK_BACK: go_up(); return; case VK_F2: begin_rename(); return; case VK_F5: do_cmd(CMD_REFRESH); return; case VK_F11: if (g_pv.kind >= PK_TEXT) pv_open_full(); return; case VK_DELETE: do_delete(shift ? 1 : 0); return; case VK_F4: if (ctrl) close_tab(S.cur); return;
     case VK_TAB: if (ctrl && S.ntabs > 1) switch_tab((S.cur + (shift ? S.ntabs - 1 : 1)) % S.ntabs); return;
     case VK_ESCAPE: if (g_fullwnd) { pv_close_full(); return; } if (t->filter[0]) { set_search_text(L""); apply_search_text(); } else { sel_clear(t); preview_update(); redraw(); } return;
     case 'A': if (ctrl) select_all(); return; case 'C': if (ctrl) { if (g_pv.havesel) pv_copy(0); else do_copy(0); } return; case 'X': if (ctrl) do_copy(1); return; case 'V': if (ctrl) do_paste(); return; case 'T': if (ctrl) new_tab(NULL); return; case 'W': if (ctrl) close_tab(S.cur); return;
@@ -4310,21 +5215,21 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: on_lbutton(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), wp); return 0;
     case WM_LBUTTONUP: on_lbuttonup(GET_X_LPARAM(lp), GET_Y_LPARAM(lp)); return 0;
     case WM_CAPTURECHANGED: if ((HWND)lp != h && (g_in.rb_on || g_in.dragging || g_in.drag_pend)) { g_in.rb_on = g_in.dragging = g_in.drag_pend = 0; redraw(); } return 0;
-    case WM_LBUTTONDBLCLK: { int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); if (in_rect(&LY.caption, x, y)) return 0; int vi = hit_item(x, y); if (vi >= 0) { sel_view(vi, 0, 0); open_item(focus_item(curtab())); } else if (view_mode() == 0 && in_rect(&LY.hdr, x, y)) click_header(x); else if (in_rect(&LY.preview, x, y) && g_pv.kind >= PK_TEXT && !in_rect(&g_pc_panel.hdr, x, y)) pv_open_full(); return 0; }
-    case WM_RBUTTONDOWN: { int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); SetFocus(h); int vi = hit_item(x, y); if (vi >= 0 && !curtab()->it[curtab()->view[vi]].sel) sel_view(vi, 0, 0); else if (vi >= 0) curtab()->focus = vi;
+    case WM_LBUTTONDBLCLK: { int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); if (in_rect(&LY.caption, x, y) || g_ed) return 0; int vi = hit_item(x, y); if (in_rect(&LY.nav, x, y)) { int ni = nav_hit(x, y); if (ni >= 0 && S.nav[ni].exp >= 0 && !S.nav[ni].root) nav_toggle(ni); return 0; } if (vi >= 0) { sel_view(vi, 0, 0); open_item(focus_item(curtab())); } else if (C.dbl_up && in_rect(&LY.body, x, y) && g_pv.kind != PK_NONE + 99) { go_up(); } else if (view_mode() == 0 && in_rect(&LY.hdr, x, y)) click_header(x); else if (in_rect(&LY.preview, x, y) && g_pv.kind >= PK_TEXT && !in_rect(&g_pc_panel.hdr, x, y)) pv_open_full(); return 0; }
+    case WM_RBUTTONDOWN: { int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); SetFocus(h); if (g_ed) { lay_context(x, y); return 0; } int vi = hit_item(x, y); if (vi >= 0 && !curtab()->it[curtab()->view[vi]].sel) sel_view(vi, 0, 0); else if (vi >= 0) curtab()->focus = vi;
         if (S.ntabs > 1 && y >= LY.tabs.top && y < LY.tabs.bottom) { for (int i = 0; i < S.ntabs; i++) if (in_rect(&g_tabr[i], x, y)) { tab_menu(i, x, y); return 0; } }
         else if (in_rect(&LY.ribtabs, x, y) || in_rect(&LY.strip, x, y)) { PMenu *m = pm_new(); mi(m, CMD_RIBBON, L"Show command strip", C.ribbon_open, 1); popup_at(m, x, y); pm_free(m); }
         else if (vi >= 0) item_menu(x, y); else if (in_rect(&LY.body, x, y)) { sel_clear(curtab()); preview_update(); redraw(); blank_menu(x, y); } return 0; }
     case WM_MBUTTONUP: { int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); if (S.ntabs > 1 && y >= LY.tabs.top && y < LY.tabs.bottom) for (int i = 0; i < S.ntabs; i++) if (in_rect(&g_tabr[i], x, y)) { close_tab(i); break; } return 0; }
     case WM_MOUSEMOVE: { static unsigned hk; int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp); g_mx = x; g_my = y; TRACKMOUSEEVENT te = { sizeof te, TME_LEAVE, h, 0 }; TrackMouseEvent(&te);
         if (g_splitdrag || g_pvcap || S.dragsb || g_in.rb_on || g_in.drag_pend || g_in.dragging) { on_mousemove(x, y, wp); return 0; }
-        int ni = nav_hit(x, y); if (x >= LY.nav.right) ni = -1; S.hover_nav = ni; unsigned k = (unsigned)region_at(x, y) * 1000003u + (unsigned)(hit_item(x, y) + 1) * 131u + (unsigned)(ni + 1);
+        int ni = nav_hit(x, y); if (!in_rect(&LY.nav, x, y)) ni = -1; S.hover_nav = ni; unsigned k = (unsigned)region_at(x, y) * 1000003u + (unsigned)(hit_item(x, y) + 1) * 131u + (unsigned)(ni + 1);
         if (in_rect(&LY.preview, x, y) && g_pv.kind != PK_NONE) { for (int i = 0; i < g_pc_panel.nb; i++) if (in_rect(&g_pc_panel.b[i].r, x, y)) k = k * 31 + i + 1; }
         if (g_pv.kind == PK_MEDIA && in_rect(&g_pc_panel.mc, x, y)) k = k * 7 + (unsigned)(x / px(12)); if (C.checkboxes) { int vi = hit_item(x, y); if (vi >= 0) { RECT cb = check_rect(vi); if (in_rect(&cb, x, y)) k ^= 0x5bd1e995u; } }
         if (k != hk) { hk = k; redraw(); } return 0; }
     case WM_MOUSELEAVE: g_mx = g_my = -1; S.hover_nav = -1; redraw(); return 0;
     case WM_MOUSEWHEEL: { short d = GET_WHEEL_DELTA_WPARAM(wp); POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) }; ScreenToClient(h, &pt);
-        if (pt.x < LY.nav.right && pt.y >= LY.nav.top && pt.y < LY.nav.bottom) { int tot = S.nnav * px(cur_style()->nav_row), vh = LY.nav.bottom - LY.nav.top; S.nav_scroll -= d * px(cur_style()->nav_row) * 3 / 120; if (S.nav_scroll > tot - vh + px(8)) S.nav_scroll = tot - vh + px(8); if (S.nav_scroll < 0) S.nav_scroll = 0; redraw(); return 0; }
+        if (in_rect(&LY.nav, pt.x, pt.y)) { int tot = S.nnav * px(cur_style()->nav_row), vh = LY.nav.bottom - LY.nav.top; S.nav_scroll -= d * px(cur_style()->nav_row) * 3 / 120; if (S.nav_scroll > tot - vh + px(8)) S.nav_scroll = tot - vh + px(8); if (S.nav_scroll < 0) S.nav_scroll = 0; redraw(); return 0; }
         if (LY.preview.right - LY.preview.left > 2 && pt.x >= LY.preview.left && pt.y >= LY.preview.top) { if (pv_wheel(&g_pc_panel, d, GetKeyState(VK_CONTROL) < 0, pt.x, pt.y)) return 0; }
         if (GetKeyState(VK_CONTROL) < 0 && view_mode() == 1) { do_cmd(d > 0 ? CMD_ICON_PLUS : CMD_ICON_MINUS); return 0; } if (GetKeyState(VK_CONTROL) < 0) { do_cmd(d > 0 ? CMD_ZOOM_IN : CMD_ZOOM_OUT); return 0; } scroll_by(-d * px(cur_style()->row_h) * 3 / 120); return 0; }
     case WM_KEYDOWN: if (LY.preview.right > LY.preview.left && in_rect(&LY.preview, g_mx, g_my) && g_pv.npg && (wp == VK_OEM_PLUS || wp == VK_OEM_MINUS)) { pv_key(&g_pc_panel, wp); return 0; } on_key(wp); return 0;
@@ -4339,18 +5244,25 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show) {
     (void)hp; (void)cmd; log_init(); detect_wine(); fm_log("Files (C) starting - Wine=%d", ON_WINE); CoInitialize(NULL);
     int argc = 0; WCHAR **argv = CommandLineToArgvW(GetCommandLineW(), &argc); WCHAR open_path[MAX_PATH] = L"";
     for (int i = 1; i < argc; i++) { if (!wcscmp(argv[i], L"--open") && i + 1 < argc) scpy(open_path, MAX_PATH, argv[++i]); else if (argv[i][0] != '-' && !open_path[0]) scpy(open_path, MAX_PATH, argv[i]); }
-    HANDLE mtx = CreateMutexW(NULL, FALSE, FM_MUTEX);
-    if (GetLastError() == ERROR_ALREADY_EXISTS) { HWND w = FindWindowW(FM_CLASS, NULL); if (w) { if (open_path[0]) { COPYDATASTRUCT cd = { 0, (lstrlenW(open_path) + 1) * sizeof(WCHAR), open_path }; SendMessageW(w, WM_COPYDATA, 0, (LPARAM)&cd); } if (IsIconic(w)) ShowWindow(w, SW_RESTORE); SetForegroundWindow(w); } return 0; }
-    cfg_init_paths(); cfg_load(); gdip_start(); doc_fonts_load(); pm_register();
-    WNDCLASSEXW wc; memset(&wc, 0, sizeof wc); wc.cbSize = sizeof wc; wc.style = CS_DBLCLKS; wc.lpfnWndProc = wndproc; wc.hInstance = hi; wc.hCursor = LoadCursorW(NULL, IDC_ARROW); wc.lpszClassName = FM_CLASS;
+    for (int i = 1; i < argc; i++) if (!wcscmp(argv[i], L"--safe")) g_safe = 1;
+#ifdef VIEWER_EXE
+    g_viewer = 1;
+#endif
+    for (int i = 1; i < argc; i++) if (!wcscmp(argv[i], L"--viewer")) g_viewer = 1;
+    if (g_viewer) { if (!viewer_pick(open_path)) return 0; scpy(g_vfile, MAX_PATH, open_path); parent_of(g_vfile, open_path); }
+    SetUnhandledExceptionFilter(crash_filter); SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+    HANDLE mtx = g_viewer ? NULL : CreateMutexW(NULL, FALSE, FM_MUTEX); g_mtx = mtx;
+    if (!g_viewer && GetLastError() == ERROR_ALREADY_EXISTS) { HWND w = FindWindowW(FM_CLASS, NULL); if (w) { if (open_path[0]) { COPYDATASTRUCT cd = { 0, (lstrlenW(open_path) + 1) * sizeof(WCHAR), open_path }; SendMessageW(w, WM_COPYDATA, 0, (LPARAM)&cd); } if (IsIconic(w)) ShowWindow(w, SW_RESTORE); SetForegroundWindow(w); } return 0; }
+    cfg_init_paths(); cfg_load(); lay_load_cur(); gdip_start(); doc_fonts_load(); pm_register();
+    WNDCLASSEXW wc; memset(&wc, 0, sizeof wc); wc.cbSize = sizeof wc; wc.style = CS_DBLCLKS; wc.lpfnWndProc = wndproc; wc.hInstance = hi; wc.hCursor = LoadCursorW(NULL, IDC_ARROW); wc.lpszClassName = g_viewer ? L"WinShellFM.ViewerHost" : FM_CLASS;
     wc.hIcon = (HICON)LoadImageW(hi, MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE); if (!wc.hIcon) wc.hIcon = LoadIconW(NULL, IDI_APPLICATION); wc.hIconSm = wc.hIcon; RegisterClassExW(&wc);
     int x = CW_USEDEFAULT, y = CW_USEDEFAULT; if (C.window_x != CFG_UNSET && C.window_y != CFG_UNSET) { int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN); if (C.window_x > -C.window_w + 100 && C.window_x < sw - 100 && C.window_y > -20 && C.window_y < sh - 100) { x = C.window_x; y = C.window_y; } }
-    HWND w = CreateWindowExW(WS_EX_APPWINDOW, FM_CLASS, L"Files(Winlator/Wine)", WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, x, y, C.window_w, C.window_h, NULL, NULL, hi, NULL);
+    HWND w = CreateWindowExW(WS_EX_APPWINDOW, g_viewer ? L"WinShellFM.ViewerHost" : FM_CLASS, L"Files(Winlator/Wine)", WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN, x, y, C.window_w, C.window_h, NULL, NULL, hi, NULL);
     if (!w) { fm_log("CreateWindow failed %lu", GetLastError()); return 1; } update_pal(); apply_fonts(); int restored = 0;
     if (!open_path[0] && C.restore_session && C.session_tabs.n) { for (int i = 0; i < C.session_tabs.n && S.ntabs < FM_MAXTABS; i++) { const WCHAR *p = C.session_tabs.v[i]; if (p[0] && !is_special(p) && !dir_exists(p)) continue; tab_init(&S.tabs[S.ntabs], p); S.tabs[S.ntabs].pinned = sl_find(&C.pinned_tabs, p) >= 0; S.ntabs++; } if (S.ntabs) { restored = 1; S.cur = C.session_cur >= 0 && C.session_cur < S.ntabs ? C.session_cur : 0; } }
     if (!restored) { WCHAR p[MAX_PATH]; scpy(p, MAX_PATH, open_path[0] ? open_path : C.last_dir); if (p[0]) norm_path(p); if (p[0] && !dir_exists(p)) p[0] = 0; if (!p[0]) scpy(p, MAX_PATH, L"::quick"); tab_init(&S.tabs[0], p); S.ntabs = 1; S.cur = 0; } else if (open_path[0]) new_tab(open_path);
-    set_search_text(curtab()->filter); reload(0); set_title(); place_edits(); SetTimer(w, TIMER_UI, 250, NULL); SetTimer(w, TIMER_NAV, 2000, NULL);
-    ShowWindow(w, show); UpdateWindow(w); run_autostart(0);
-    { int td = today_days(); if (C.about_day <= 0 || td - C.about_day >= 30) { C.about_day = td; cfg_save(); PostMessageW(w, WM_APP + 9, 0, 0); } }
+    set_search_text(curtab()->filter); reload(0); set_title(); place_edits(); if (!g_viewer) { SetTimer(w, TIMER_UI, 250, NULL); SetTimer(w, TIMER_NAV, 2000, NULL); }
+    if (g_viewer) viewer_start(); else { ShowWindow(w, show); UpdateWindow(w); run_autostart(0); }
+    if (!g_viewer) { int td = today_days(); if (C.about_day <= 0 || td - C.about_day >= 30) { C.about_day = td; cfg_save(); PostMessageW(w, WM_APP + 9, 0, 0); } }
     fm_log("Files ready"); MSG m; while (GetMessageW(&m, NULL, 0, 0) > 0) { TranslateMessage(&m); DispatchMessageW(&m); } CloseHandle(mtx); return (int)m.wParam;
 }
