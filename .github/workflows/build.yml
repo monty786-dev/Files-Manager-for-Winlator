@@ -51,10 +51,32 @@ jobs:
             -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -lwinmm \
             -static 2>&1 | tee build_x64.log
 
+      - name: Build the Viewer app 32-bit (x86)
+        shell: bash
+        run: |
+          set -o pipefail
+          i686-w64-mingw32-gcc -O2 -s -std=gnu11 -w \
+            -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
+            -Wno-error=implicit-function-declaration \
+            -DVIEWER_EXE -municode -mwindows winshell_fm.c app_x86.o -o FilesViewer_x86.exe \
+            -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -lwinmm \
+            -static 2>&1 | tee build_viewer_x86.log
+
+      - name: Build the Viewer app 64-bit (x64)
+        shell: bash
+        run: |
+          set -o pipefail
+          x86_64-w64-mingw32-gcc -O2 -s -std=gnu11 -w \
+            -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
+            -Wno-error=implicit-function-declaration \
+            -DVIEWER_EXE -municode -mwindows winshell_fm.c app_x64.o -o FilesViewer_x64.exe \
+            -lgdi32 -luser32 -lshell32 -lcomdlg32 -lcomctl32 -lole32 -luuid -lshlwapi -ladvapi32 -lmsimg32 -lwinmm \
+            -static 2>&1 | tee build_viewer_x64.log
+
       - name: Show the result
         run: |
-          file WinShellFM_x86.exe WinShellFM_x64.exe
-          ls -l WinShellFM_*.exe
+          file WinShellFM_x86.exe WinShellFM_x64.exe FilesViewer_x86.exe FilesViewer_x64.exe
+          ls -l WinShellFM_*.exe FilesViewer_*.exe
 
       - name: Put compiler errors on the run summary page
         if: failure()
@@ -62,7 +84,7 @@ jobs:
         run: |
           echo '### Compiler errors' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          (grep -h -m 40 -B1 -A3 "error" build_x86.log build_x64.log 2>/dev/null || echo "no log found") >> "$GITHUB_STEP_SUMMARY"
+          (grep -h -m 40 -B1 -A3 "error" build_x86.log build_x64.log build_viewer_x86.log build_viewer_x64.log 2>/dev/null || echo "no log found") >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the program and build logs
@@ -74,8 +96,12 @@ jobs:
           path: |
             WinShellFM_x86.exe
             WinShellFM_x64.exe
+            FilesViewer_x86.exe
+            FilesViewer_x64.exe
             build_x86.log
             build_x64.log
+            build_viewer_x86.log
+            build_viewer_x64.log
 
       - name: Attach to a GitHub Release (only when you push a tag like v1.0)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -84,3 +110,5 @@ jobs:
           files: |
             WinShellFM_x86.exe
             WinShellFM_x64.exe
+            FilesViewer_x86.exe
+            FilesViewer_x64.exe
